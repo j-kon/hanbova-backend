@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: hanbova-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hanbova}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hanbova}
+      POSTGRES_DB: ${POSTGRES_DB:-hanbova}
+    ports:
+      - "${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hanbova} -d ${POSTGRES_DB:-hanbova}"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
+
+  cashu-mint:
+    image: cashubtc/nutshell:latest
+    container_name: hanbova-cashu-mint
+    restart: unless-stopped
+    command: ["poetry", "run", "mint", "--host", "0.0.0.0", "--port", "3338"]
+    environment:
+      - MINT_LISTEN_HOST=0.0.0.0
+      - MINT_LISTEN_PORT=3338
+      - MINT_LIGHTNING_BACKEND=FakeWallet
+      - MINT_PRIVATE_KEY=hanbova_development_mint_seed_key_12345
+      - MINT_DERIVATION_PATH=m/0'/0'/0'
+    ports:
+      - "${CASHU_MINT_PORT:-3338}:3338"
+    volumes:
+      - nutshell_data:/app/data
+
+volumes:
+  pgdata:
+    driver: local
+  nutshell_data:
+    driver: local

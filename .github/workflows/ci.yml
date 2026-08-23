@@ -1,0 +1,59 @@
+name: Hanbova Backend CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  rust-check-test:
+    name: Rust Check, Clippy & Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hanbova
+          POSTGRES_PASSWORD: hanbovadevpassword
+          POSTGRES_DB: hanbova
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      cashu-mint:
+        image: cashubtc/nutshell:latest
+        env:
+          MINT_LIGHTNING_BACKEND: FakeWallet
+          MINT_LISTEN_HOST: 0.0.0.0
+          MINT_LISTEN_PORT: 3338
+        ports:
+          - 3338:3338
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy Lints
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run Tests
+        run: cargo test --workspace -- --nocapture
+        env:
+          DATABASE_URL: postgres://hanbova:hanbovadevpassword@localhost:5432/hanbova

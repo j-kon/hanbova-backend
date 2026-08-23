@@ -1,0 +1,48 @@
+# Target and build directories
+/target/
+**/target/
+**/.dart_tool/
+**/build/
+**/.pub-cache/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/.pub/
+
+# Environment and secrets
+.env
+*.env
+!.env.example
+*.pem
+*.key
+*.seed
+*.keystore
+*.jks
+
+# IDE & Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+**/.DS_Store
+
+# Flutter / Android / iOS specific
+apps/mobile/android/.gradle
+apps/mobile/android/local.properties
+apps/mobile/ios/.symlinks/
+apps/mobile/ios/Flutter/Flutter.podspec
+apps/mobile/ios/Flutter/Generated.xcconfig
+apps/mobile/ios/Flutter/app.framework
+apps/mobile/ios/Pods/
+apps/mobile/ios/Podfile.lock
+apps/mobile/.flutter-plugins
+apps/mobile/.flutter-plugins-dependencies
+
+# Database data
+pgdata/
+
+# Coverage and test artifacts
+coverage/
+*.lcov
