@@ -207,6 +207,14 @@ impl AuthService {
         Ok(user.into())
     }
 
+    pub async fn find_user_by_username(&self, username: &str) -> Result<Option<User>> {
+        let clean = username.trim().trim_start_matches('@').to_lowercase();
+        self.repo
+            .find_by_username_or_email(&clean)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Database error looking up user: {e}")))
+    }
+
     async fn generate_auth_response(&self, user: User) -> Result<AuthResponse> {
         let access_token = generate_access_token(
             user.id,

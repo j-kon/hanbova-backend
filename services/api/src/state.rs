@@ -7,7 +7,10 @@ use crate::{
         AuthService,
     },
     config::AppConfig,
-    repositories::{InMemoryPaymentIntentRepository, PgPaymentIntentRepository},
+    repositories::{
+        InMemoryPaymentIntentRepository, InMemoryProtectedMessageRepository,
+        PgPaymentIntentRepository, PgProtectedMessageRepository, ProtectedMessageRepository,
+    },
     services::PaymentService,
 };
 use hanbova_protected_payments::MockProtectedPaymentProvider;
@@ -18,6 +21,7 @@ pub struct AppState {
     pub db_pool: Option<PgPool>,
     pub payment_service: PaymentService,
     pub auth_service: AuthService,
+    pub protected_message_repo: Arc<dyn ProtectedMessageRepository>,
 }
 
 impl AppState {
@@ -37,16 +41,22 @@ impl AppState {
         };
 
         let auth_service = AuthService::new(
-            user_repo,
+            user_repo.clone(),
             config.jwt_secret.clone(),
             config.is_development(),
         );
+
+        let protected_message_repo: Arc<dyn ProtectedMessageRepository> = match &pool {
+            Some(p) => Arc::new(PgProtectedMessageRepository::new(p.clone())),
+            None => Arc::new(InMemoryProtectedMessageRepository::new(Some(user_repo.clone()))),
+        };
 
         Self {
             config,
             db_pool: pool,
             payment_service,
             auth_service,
+            protected_message_repo,
         }
     }
 }

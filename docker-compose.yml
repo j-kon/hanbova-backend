@@ -18,7 +18,7 @@ services:
       retries: 5
 
   cashu-mint:
-    image: cashubtc/nutshell:latest
+    image: cashubtc/nutshell:0.16.5
     container_name: hanbova-cashu-mint
     restart: unless-stopped
     command: ["poetry", "run", "mint", "--host", "0.0.0.0", "--port", "3338"]
