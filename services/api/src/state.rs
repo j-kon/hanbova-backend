@@ -13,6 +13,7 @@ use crate::{
     },
     services::PaymentService,
 };
+use hanbova_lightning::{CashuLightningBridge, LightningProvider, MockLightningProvider};
 use hanbova_protected_payments::MockProtectedPaymentProvider;
 
 #[derive(Clone)]
@@ -22,6 +23,8 @@ pub struct AppState {
     pub payment_service: PaymentService,
     pub auth_service: AuthService,
     pub protected_message_repo: Arc<dyn ProtectedMessageRepository>,
+    pub lightning_provider: Arc<dyn LightningProvider>,
+    pub cashu_bridge: Arc<CashuLightningBridge>,
 }
 
 impl AppState {
@@ -51,12 +54,17 @@ impl AppState {
             None => Arc::new(InMemoryProtectedMessageRepository::new(Some(user_repo.clone()))),
         };
 
+        let lightning_provider: Arc<dyn LightningProvider> = Arc::new(MockLightningProvider::new(100_000));
+        let cashu_bridge = Arc::new(CashuLightningBridge::new(&config.mint_url));
+
         Self {
             config,
             db_pool: pool,
             payment_service,
             auth_service,
             protected_message_repo,
+            lightning_provider,
+            cashu_bridge,
         }
     }
 }

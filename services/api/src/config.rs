@@ -8,6 +8,7 @@ pub struct AppConfig {
     pub database_url: Option<String>,
     pub app_version: String,
     pub jwt_secret: String,
+    pub mint_url: String,
 }
 
 impl AppConfig {
@@ -23,6 +24,7 @@ impl AppConfig {
         let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| {
             "hanbova_dev_jwt_secret_key_change_in_production_32bytes".to_string()
         });
+        let mint_url = env::var("MINT_URL").unwrap_or_else(|_| "http://127.0.0.1:3338".to_string());
 
         Self {
             env,
@@ -31,6 +33,7 @@ impl AppConfig {
             database_url,
             app_version,
             jwt_secret,
+            mint_url,
         }
     }
 

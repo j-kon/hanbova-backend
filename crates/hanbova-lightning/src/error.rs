@@ -20,6 +20,9 @@ pub enum LightningError {
 
     #[error("Node / Provider communication error: {0}")]
     NodeError(String),
+
+    #[error("Provider error: {0}")]
+    ProviderError(String),
 }
 
 pub type Result<T> = std::result::Result<T, LightningError>;

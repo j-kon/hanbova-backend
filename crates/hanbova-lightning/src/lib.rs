@@ -5,6 +5,7 @@
 pub mod error;
 pub mod mock;
 pub mod models;
+pub mod nut04_nut05;
 pub mod traits;
 
 pub use error::{LightningError, Result};
@@ -13,4 +14,5 @@ pub use models::{
     CreateInvoiceRequest, Invoice, LightningBalance, LightningPaymentStatus, PayInvoiceRequest,
     PaymentDetails,
 };
+pub use nut04_nut05::{CashuLightningBridge, MintQuoteResponse, MeltQuoteResponse};
 pub use traits::LightningProvider;

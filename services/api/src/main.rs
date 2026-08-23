@@ -113,6 +113,7 @@ mod tests {
             database_url: None,
             app_version: "0.1.0".to_string(),
             jwt_secret: "test_jwt_secret_for_automated_testing_purposes".to_string(),
+            mint_url: "http://127.0.0.1:3338".to_string(),
         };
         let state = AppState::new(config, None);
         build_app(state)
@@ -705,6 +706,60 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ack_res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_lightning_invoice_and_pay() {
+        let app = setup_test_app();
+
+        // 1. Create Invoice
+        let invoice_payload = serde_json::json!({
+            "amount_sats": 2500,
+            "description": "Coffee on Lightning",
+            "expiry_seconds": 3600
+        });
+
+        let invoice_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/lightning/invoice")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&invoice_payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(invoice_res.status(), StatusCode::CREATED);
+        let invoice_body = invoice_res.into_body().collect().await.unwrap().to_bytes();
+        let invoice_json: Value = serde_json::from_slice(&invoice_body).unwrap();
+        let bolt11 = invoice_json["bolt11"].as_str().unwrap();
+        assert!(bolt11.starts_with("lnbc") || bolt11.starts_with("lntb"));
+
+        // 2. Pay Invoice
+        let pay_payload = serde_json::json!({
+            "bolt11": bolt11,
+            "max_fee_sats": 10
+        });
+
+        let pay_res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/lightning/pay")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&pay_payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(pay_res.status(), StatusCode::OK);
+        let pay_body = pay_res.into_body().collect().await.unwrap().to_bytes();
+        let pay_json: Value = serde_json::from_slice(&pay_body).unwrap();
+        assert_eq!(pay_json["status"], "succeeded");
     }
 }
 
