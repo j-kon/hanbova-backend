@@ -1262,6 +1262,7 @@ dependencies = [
 name = "hanbova-protected-payments"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "bip39",
  "cdk",
@@ -1271,6 +1272,7 @@ dependencies = [
  "secp256k1",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
