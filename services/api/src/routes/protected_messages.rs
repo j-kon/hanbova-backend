@@ -184,8 +184,8 @@ pub async fn get_message_by_id_handler(
     // Object-level authorization check: user must be sender or recipient
     if message.sender_user_id != auth_user.user_id && message.recipient_user_id != auth_user.user_id
     {
-        return Err(ApiError::BadRequest(
-            "Unauthorized: You do not have permission to view this message".into(),
+        return Err(ApiError::Forbidden(
+            "Forbidden: You do not have permission to view this message".into(),
         ));
     }
 
@@ -205,15 +205,49 @@ pub async fn ack_message_handler(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Protected message '{id}' not found")))?;
 
-    // Only sender or recipient can acknowledge/update status
+    // Object-level authorization check: user must be sender or recipient
     if message.sender_user_id != auth_user.user_id && message.recipient_user_id != auth_user.user_id
     {
-        return Err(ApiError::BadRequest(
-            "Unauthorized: You do not have permission to update this message".into(),
+        return Err(ApiError::Forbidden(
+            "Forbidden: You do not have permission to update this message".into(),
         ));
     }
 
     let new_status = payload.status.unwrap_or_else(|| "acknowledged".to_string());
+
+    // Role-specific transition rules:
+    // - "claimed": only recipient
+    // - "refunded": only sender
+    // - "acknowledged" / "delivered": only recipient
+    match new_status.as_str() {
+        "claimed" => {
+            if auth_user.user_id != message.recipient_user_id {
+                return Err(ApiError::Forbidden(
+                    "Forbidden: Only the intended recipient can mark this protected message as claimed".into(),
+                ));
+            }
+        }
+        "refunded" => {
+            if auth_user.user_id != message.sender_user_id {
+                return Err(ApiError::Forbidden(
+                    "Forbidden: Only the sender can mark this protected message as refunded".into(),
+                ));
+            }
+        }
+        "acknowledged" | "delivered" => {
+            if auth_user.user_id != message.recipient_user_id {
+                return Err(ApiError::Forbidden(
+                    "Forbidden: Only the intended recipient can acknowledge message receipt".into(),
+                ));
+            }
+        }
+        _ => {
+            return Err(ApiError::BadRequest(format!(
+                "Invalid or unauthorized status transition: '{new_status}'"
+            )));
+        }
+    }
+
     state
         .protected_message_repo
         .update_message_status(id, &new_status)

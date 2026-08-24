@@ -771,7 +771,7 @@ mod tests {
             .unwrap();
         assert_eq!(get_msg_res.status(), StatusCode::OK);
 
-        // 9. Charlie (Unauthorized) attempts to fetch Bob's message -> Must be REJECTED
+        // 9. Charlie (Unauthorized) attempts to fetch Bob's message -> Must be FORBIDDEN (403)
         let charlie_attempt_res = app
             .clone()
             .oneshot(
@@ -784,9 +784,41 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(charlie_attempt_res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(charlie_attempt_res.status(), StatusCode::FORBIDDEN);
 
-        // 10. Bob acknowledges message (e.g. status = "claimed")
+        // 9b. Charlie attempts to ack Bob's message -> Must be FORBIDDEN (403)
+        let charlie_ack_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/protected-messages/{}/ack", message_id))
+                    .header("authorization", format!("Bearer {}", charlie_token))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&serde_json::json!({"status": "claimed"})).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(charlie_ack_res.status(), StatusCode::FORBIDDEN);
+
+        // 9c. Alice (sender) attempts to mark message as "claimed" -> Must be FORBIDDEN (403, only recipient can mark claimed)
+        let alice_invalid_claim_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/protected-messages/{}/ack", message_id))
+                    .header("authorization", format!("Bearer {}", alice_token))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&serde_json::json!({"status": "claimed"})).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(alice_invalid_claim_res.status(), StatusCode::FORBIDDEN);
+
+        // 10. Bob (recipient) acknowledges message (status = "claimed") -> Must SUCCEED (200)
         let ack_payload = serde_json::json!({
             "status": "claimed"
         });

@@ -17,9 +17,8 @@ pub async fn create_payment_intent(
     auth_user: AuthUser,
     Json(mut payload): Json<CreatePaymentIntentRequest>,
 ) -> Result<(StatusCode, Json<PaymentIntentResponse>), ApiError> {
-    if payload.sender_id.is_none() {
-        payload.sender_id = Some(auth_user.user_id.to_string());
-    }
+    // Unconditionally set sender identity from the authenticated session
+    payload.sender_id = Some(auth_user.user_id.to_string());
     let response = state.payment_service.create_payment_intent(payload).await?;
 
     Ok((StatusCode::CREATED, Json(response)))
