@@ -14,5 +14,5 @@ pub use models::{
     CreateInvoiceRequest, Invoice, LightningBalance, LightningPaymentStatus, PayInvoiceRequest,
     PaymentDetails,
 };
-pub use nut04_nut05::{CashuLightningBridge, MintQuoteResponse, MeltQuoteResponse};
+pub use nut04_nut05::{CashuLightningBridge, MeltQuoteResponse, MintQuoteResponse};
 pub use traits::LightningProvider;

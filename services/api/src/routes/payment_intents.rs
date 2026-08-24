@@ -15,5 +15,8 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", post(create_payment_intent).get(list_payment_intents))
         .route("/:id", get(get_payment_intent))
-        .route("/:id/status", patch(update_payment_intent_status).post(update_payment_intent_status))
+        .route(
+            "/:id/status",
+            patch(update_payment_intent_status).post(update_payment_intent_status),
+        )
 }

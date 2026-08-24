@@ -1,8 +1,6 @@
 use chrono::{Duration, Utc};
 use hanbova_core::{PaymentIntent, PaymentStatus, PaymentType, SatoshiAmount};
-use hanbova_protected_payments::{
-    CreateProtectedPaymentRequest, LockingConditions, ProtectedPaymentProvider,
-};
+use hanbova_protected_payments::ProtectedPaymentProvider;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -15,6 +13,7 @@ use crate::{
 #[derive(Clone)]
 pub struct PaymentService {
     repo: Arc<dyn PaymentIntentRepository>,
+    #[allow(dead_code)]
     protected_provider: Arc<dyn ProtectedPaymentProvider>,
 }
 
@@ -49,38 +48,13 @@ impl PaymentService {
             expires_at,
         )?;
 
-        let mut token_out = None;
-
         match intent.payment_type {
             PaymentType::Protected => {
                 let expiry = expires_at.unwrap_or_else(|| now + Duration::hours(24));
                 intent.expires_at = Some(expiry);
-
-                let locking_conditions = req.recipient_pubkey.map(|rec_pub| LockingConditions {
-                    recipient_pubkey: rec_pub,
-                    locktime: expiry,
-                    refund_pubkey: req.sender_refund_pubkey,
-                    sig_flag: Some("SIG_INPUTS".to_string()),
-                });
-
-                let protected_req = CreateProtectedPaymentRequest {
-                    payment_id: Some(intent.id),
-                    amount_sats: intent.amount_sats,
-                    recipient_identifier: intent.recipient_identifier.clone(),
-                    sender_id: intent.sender_id.clone(),
-                    description: intent.description.clone(),
-                    expires_at: expiry,
-                    locking_conditions,
-                };
-
-                let receipt = self
-                    .protected_provider
-                    .create_protected_payment(protected_req)
-                    .await?;
-
-                intent.status = receipt.status;
-                intent.claim_reference = Some(receipt.claim_reference);
-                token_out = receipt.cashu_token;
+                intent.status = PaymentStatus::Protected;
+                let claim_ref = format!("hnbv_claim_{}", intent.id.simple());
+                intent.claim_reference = Some(claim_ref);
             }
             PaymentType::Instant => {
                 intent.status = PaymentStatus::Pending;
@@ -89,29 +63,57 @@ impl PaymentService {
 
         self.repo.save(&intent).await?;
 
-        let mut response: PaymentIntentResponse = intent.into();
-        response.cashu_token = token_out;
-
+        let response: PaymentIntentResponse = intent.into();
         Ok(response)
     }
 
-    pub async fn get_payment_intent(&self, id: Uuid) -> Result<PaymentIntentResponse> {
+    pub async fn get_payment_intent(
+        &self,
+        id: Uuid,
+        user_id: Option<&str>,
+        username: Option<&str>,
+    ) -> Result<PaymentIntentResponse> {
         let intent = self
             .repo
             .find_by_id(id)
             .await?
             .ok_or_else(|| ApiError::NotFound(format!("Payment intent {id} not found")))?;
 
-        let live_status = self
-            .protected_provider
-            .get_payment_status(id)
-            .await
-            .unwrap_or(intent.status);
+        if let Some(uid) = user_id {
+            let is_sender = intent
+                .sender_id
+                .as_deref()
+                .map(|s| matches_actor(uid, username, s))
+                .unwrap_or(false);
+            let is_recipient = matches_actor(uid, username, &intent.recipient_identifier);
 
-        let mut response: PaymentIntentResponse = intent.into();
-        response.status = live_status;
+            if !is_sender && !is_recipient {
+                return Err(ApiError::Forbidden(
+                    "You do not have permission to access this payment intent".into(),
+                ));
+            }
+        }
 
+        let response: PaymentIntentResponse = intent.into();
         Ok(response)
+    }
+
+    pub async fn list_user_payment_intents(
+        &self,
+        user_id: &str,
+        username: Option<&str>,
+    ) -> Result<Vec<PaymentIntentResponse>> {
+        let mut list = self.repo.find_by_user(user_id).await?;
+        if let Some(uname) = username {
+            let by_name = self.repo.find_by_user(uname).await?;
+            for item in by_name {
+                if !list.iter().any(|existing| existing.id == item.id) {
+                    list.push(item);
+                }
+            }
+        }
+        list.sort_by_key(|b| std::cmp::Reverse(b.created_at));
+        Ok(list.into_iter().map(Into::into).collect())
     }
 
     pub async fn list_payment_intents(&self) -> Result<Vec<PaymentIntentResponse>> {
@@ -124,12 +126,45 @@ impl PaymentService {
         &self,
         payment_id: Uuid,
         new_status: PaymentStatus,
+        user_id: &str,
+        username: Option<&str>,
     ) -> Result<PaymentIntentResponse> {
-        let mut intent = self
-            .repo
-            .find_by_id(payment_id)
-            .await?
-            .ok_or_else(|| ApiError::NotFound(format!("Payment intent {payment_id} not found")))?;
+        let mut intent =
+            self.repo.find_by_id(payment_id).await?.ok_or_else(|| {
+                ApiError::NotFound(format!("Payment intent {payment_id} not found"))
+            })?;
+
+        let is_sender = intent
+            .sender_id
+            .as_deref()
+            .map(|s| matches_actor(user_id, username, s))
+            .unwrap_or(false);
+        let is_recipient = matches_actor(user_id, username, &intent.recipient_identifier);
+
+        // Strict actor authorization rules
+        match new_status {
+            PaymentStatus::Claimed => {
+                if !is_recipient {
+                    return Err(ApiError::Forbidden(
+                        "Only the intended recipient can report claimed status".into(),
+                    ));
+                }
+            }
+            PaymentStatus::Refunded => {
+                if !is_sender {
+                    return Err(ApiError::Forbidden(
+                        "Only the sender can report refunded status".into(),
+                    ));
+                }
+            }
+            _ => {
+                if !is_sender && !is_recipient {
+                    return Err(ApiError::Forbidden(
+                        "Unauthorized to update this payment intent".into(),
+                    ));
+                }
+            }
+        }
 
         // Validate state machine transition
         intent.status = intent.status.transition_to(new_status)?;
@@ -139,4 +174,23 @@ impl PaymentService {
 
         Ok(intent.into())
     }
+}
+
+fn matches_actor(user_id: &str, username: Option<&str>, target: &str) -> bool {
+    let clean_target = target.strip_prefix('@').unwrap_or(target);
+    let clean_user_id = user_id.strip_prefix('@').unwrap_or(user_id);
+    if target == user_id || clean_target == clean_user_id {
+        return true;
+    }
+    if let Some(uname) = username {
+        let clean_uname = uname.strip_prefix('@').unwrap_or(uname);
+        if target.eq_ignore_ascii_case(uname)
+            || clean_target.eq_ignore_ascii_case(clean_uname)
+            || target == uname
+            || clean_target == clean_uname
+        {
+            return true;
+        }
+    }
+    false
 }

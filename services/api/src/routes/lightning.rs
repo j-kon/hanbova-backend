@@ -60,12 +60,18 @@ async fn create_invoice(
 
     let req = CreateInvoiceRequest {
         amount_sats: amount,
-        description: payload.description.unwrap_or_else(|| "Hanbova Lightning Receive".to_string()),
+        description: payload
+            .description
+            .unwrap_or_else(|| "Hanbova Lightning Receive".to_string()),
         expiry_seconds: payload.expiry_seconds.map(|s| s as u32),
     };
 
     match state.lightning_provider.create_invoice(req).await {
-        Ok(invoice) => (StatusCode::CREATED, Json(serde_json::to_value(invoice).unwrap())).into_response(),
+        Ok(invoice) => (
+            StatusCode::CREATED,
+            Json(serde_json::to_value(invoice).unwrap()),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),
@@ -84,7 +90,9 @@ async fn pay_invoice(
     };
 
     match state.lightning_provider.pay_invoice(req).await {
-        Ok(payment) => (StatusCode::OK, Json(serde_json::to_value(payment).unwrap())).into_response(),
+        Ok(payment) => {
+            (StatusCode::OK, Json(serde_json::to_value(payment).unwrap())).into_response()
+        }
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": e.to_string() })),
@@ -97,7 +105,11 @@ async fn create_mint_quote(
     State(state): State<AppState>,
     Json(payload): Json<MintQuoteDto>,
 ) -> impl IntoResponse {
-    match state.cashu_bridge.create_mint_quote(payload.amount_sats).await {
+    match state
+        .cashu_bridge
+        .create_mint_quote(payload.amount_sats)
+        .await
+    {
         Ok(quote) => (StatusCode::OK, Json(serde_json::to_value(quote).unwrap())).into_response(),
         Err(e) => (
             StatusCode::BAD_GATEWAY,

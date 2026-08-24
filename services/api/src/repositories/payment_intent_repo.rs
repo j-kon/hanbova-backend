@@ -15,6 +15,7 @@ pub trait PaymentIntentRepository: Send + Sync {
     async fn save(&self, intent: &PaymentIntent) -> Result<()>;
     async fn find_by_id(&self, id: Uuid) -> Result<Option<PaymentIntent>>;
     async fn list_all(&self) -> Result<Vec<PaymentIntent>>;
+    async fn find_by_user(&self, user_identifier: &str) -> Result<Vec<PaymentIntent>>;
     async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<()>;
 }
 
@@ -159,6 +160,57 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
         Ok(results)
     }
 
+    async fn find_by_user(&self, user_identifier: &str) -> Result<Vec<PaymentIntent>> {
+        let clean_id = user_identifier.strip_prefix('@').unwrap_or(user_identifier);
+        let rows = sqlx::query(
+            r#"
+            SELECT id, payment_type, status, amount_sats, sender_id, recipient_identifier, description, expires_at, claim_reference, created_at, updated_at
+            FROM payment_intents
+            WHERE sender_id = $1 OR recipient_identifier = $1 OR recipient_identifier = $2
+            ORDER BY created_at DESC
+            LIMIT 50
+            "#,
+        )
+        .bind(user_identifier)
+        .bind(clean_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let id: Uuid = row.get("id");
+            let payment_type_str: String = row.get("payment_type");
+            let status_str: String = row.get("status");
+            let amount_sats: i64 = row.get("amount_sats");
+            let sender_id: Option<String> = row.get("sender_id");
+            let recipient_identifier: String = row.get("recipient_identifier");
+            let description: Option<String> = row.get("description");
+            let expires_at: Option<DateTime<Utc>> = row.get("expires_at");
+            let claim_reference: Option<String> = row.get("claim_reference");
+            let created_at: DateTime<Utc> = row.get("created_at");
+            let updated_at: DateTime<Utc> = row.get("updated_at");
+
+            let payment_type = payment_type_str.parse().map_err(ApiError::BadRequest)?;
+            let status = status_str.parse().map_err(ApiError::BadRequest)?;
+
+            results.push(PaymentIntent {
+                id,
+                payment_type,
+                status,
+                amount_sats: SatoshiAmount::from_sats(amount_sats as u64),
+                sender_id,
+                recipient_identifier,
+                description,
+                expires_at,
+                claim_reference,
+                created_at,
+                updated_at,
+            });
+        }
+
+        Ok(results)
+    }
+
     async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<()> {
         let status_str = status.to_string();
         let now = Utc::now();
@@ -209,6 +261,24 @@ impl PaymentIntentRepository for InMemoryPaymentIntentRepository {
     async fn list_all(&self) -> Result<Vec<PaymentIntent>> {
         let map = self.storage.read().await;
         let mut list: Vec<PaymentIntent> = map.values().cloned().collect();
+        list.sort_by_key(|b| std::cmp::Reverse(b.created_at));
+        Ok(list)
+    }
+
+    async fn find_by_user(&self, user_identifier: &str) -> Result<Vec<PaymentIntent>> {
+        let clean = user_identifier.strip_prefix('@').unwrap_or(user_identifier);
+        let map = self.storage.read().await;
+        let mut list: Vec<PaymentIntent> = map
+            .values()
+            .filter(|i| {
+                i.sender_id.as_deref() == Some(user_identifier)
+                    || i.sender_id.as_deref() == Some(clean)
+                    || i.recipient_identifier == user_identifier
+                    || i.recipient_identifier == clean
+                    || i.recipient_identifier.strip_prefix('@') == Some(clean)
+            })
+            .cloned()
+            .collect();
         list.sort_by_key(|b| std::cmp::Reverse(b.created_at));
         Ok(list)
     }

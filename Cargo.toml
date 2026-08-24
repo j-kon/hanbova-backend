@@ -3,6 +3,7 @@ members = [
     "crates/hanbova-core",
     "crates/hanbova-protected-payments",
     "crates/hanbova-lightning",
+    "crates/hanbova-cdk-ffi",
     "services/api",
 ]
 resolver = "2"

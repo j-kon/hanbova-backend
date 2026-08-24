@@ -30,9 +30,15 @@ pub trait ProtectedMessageRepository: Send + Sync {
 
     async fn find_message_by_id(&self, id: Uuid) -> Result<Option<ProtectedMessageRow>>;
 
-    async fn find_inbox_by_user_id(&self, recipient_user_id: Uuid) -> Result<Vec<ProtectedMessageRow>>;
+    async fn find_inbox_by_user_id(
+        &self,
+        recipient_user_id: Uuid,
+    ) -> Result<Vec<ProtectedMessageRow>>;
 
-    async fn find_outbox_by_user_id(&self, sender_user_id: Uuid) -> Result<Vec<ProtectedMessageRow>>;
+    async fn find_outbox_by_user_id(
+        &self,
+        sender_user_id: Uuid,
+    ) -> Result<Vec<ProtectedMessageRow>>;
 
     async fn update_message_status(&self, id: Uuid, status: &str) -> Result<()>;
 }
@@ -158,7 +164,10 @@ impl ProtectedMessageRepository for PgProtectedMessageRepository {
         Ok(row)
     }
 
-    async fn find_inbox_by_user_id(&self, recipient_user_id: Uuid) -> Result<Vec<ProtectedMessageRow>> {
+    async fn find_inbox_by_user_id(
+        &self,
+        recipient_user_id: Uuid,
+    ) -> Result<Vec<ProtectedMessageRow>> {
         let rows = sqlx::query_as::<_, ProtectedMessageRow>(
             r#"
             SELECT id, payment_intent_id, sender_user_id, recipient_user_id,
@@ -177,7 +186,10 @@ impl ProtectedMessageRepository for PgProtectedMessageRepository {
         Ok(rows)
     }
 
-    async fn find_outbox_by_user_id(&self, sender_user_id: Uuid) -> Result<Vec<ProtectedMessageRow>> {
+    async fn find_outbox_by_user_id(
+        &self,
+        sender_user_id: Uuid,
+    ) -> Result<Vec<ProtectedMessageRow>> {
         let rows = sqlx::query_as::<_, ProtectedMessageRow>(
             r#"
             SELECT id, payment_intent_id, sender_user_id, recipient_user_id,
@@ -246,7 +258,10 @@ impl ProtectedMessageRepository for InMemoryProtectedMessageRepository {
         transport_pubkey: &str,
     ) -> Result<()> {
         let mut k = self.keys.write().await;
-        k.insert(user_id, (protected_pubkey.to_string(), transport_pubkey.to_string()));
+        k.insert(
+            user_id,
+            (protected_pubkey.to_string(), transport_pubkey.to_string()),
+        );
         Ok(())
     }
 
@@ -254,7 +269,10 @@ impl ProtectedMessageRepository for InMemoryProtectedMessageRepository {
         &self,
         username: &str,
     ) -> Result<Option<UserPaymentProfileResponse>> {
-        let clean = username.strip_prefix('@').unwrap_or(username).to_lowercase();
+        let clean = username
+            .strip_prefix('@')
+            .unwrap_or(username)
+            .to_lowercase();
         let user_id = if let Some(ref ur) = self.user_repo {
             let u_opt = ur
                 .find_by_username_or_email(&clean)
@@ -296,7 +314,10 @@ impl ProtectedMessageRepository for InMemoryProtectedMessageRepository {
         Ok(m.get(&id).cloned())
     }
 
-    async fn find_inbox_by_user_id(&self, recipient_user_id: Uuid) -> Result<Vec<ProtectedMessageRow>> {
+    async fn find_inbox_by_user_id(
+        &self,
+        recipient_user_id: Uuid,
+    ) -> Result<Vec<ProtectedMessageRow>> {
         let m = self.messages.read().await;
         let mut list: Vec<_> = m
             .values()
@@ -307,7 +328,10 @@ impl ProtectedMessageRepository for InMemoryProtectedMessageRepository {
         Ok(list)
     }
 
-    async fn find_outbox_by_user_id(&self, sender_user_id: Uuid) -> Result<Vec<ProtectedMessageRow>> {
+    async fn find_outbox_by_user_id(
+        &self,
+        sender_user_id: Uuid,
+    ) -> Result<Vec<ProtectedMessageRow>> {
         let m = self.messages.read().await;
         let mut list: Vec<_> = m
             .values()

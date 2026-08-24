@@ -32,6 +32,12 @@ pub enum ApiError {
     #[error("Validation error: {0}")]
     BadRequest(String),
 
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     #[error("Resource not found: {0}")]
     NotFound(String),
 
@@ -72,6 +78,8 @@ impl IntoResponse for ApiError {
                 )
             }
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg),
+            ApiError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg),
+            ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg),
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg),
             ApiError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);

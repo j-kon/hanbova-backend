@@ -19,7 +19,8 @@ async fn main() -> anyhow::Result<()> {
     println!("🛡️  HANBOVA PROTECTED ESCROW DEMONSTRATION (NUT-11 P2PK)  🛡️");
     println!("============================================================");
 
-    let mint_url = std::env::var("MINT_URL").unwrap_or_else(|_| "http://127.0.0.1:3338".to_string());
+    let mint_url =
+        std::env::var("MINT_URL").unwrap_or_else(|_| "http://127.0.0.1:3338".to_string());
     println!("📍 Target Mint: {}", mint_url);
 
     let secp = Secp256k1::new();
@@ -35,13 +36,15 @@ async fn main() -> anyhow::Result<()> {
     // Initialize Alice's Wallet
     let temp_dir_alice = tempfile::tempdir()?;
     let seed_alice = [1u8; 64];
-    let alice_provider = CashuProtectedPaymentProvider::new(&mint_url, temp_dir_alice.path(), seed_alice)?;
+    let alice_provider =
+        CashuProtectedPaymentProvider::new(&mint_url, temp_dir_alice.path(), seed_alice)?;
     println!("✅ Alice wallet initialized");
 
     // Initialize Bob's Wallet
     let temp_dir_bob = tempfile::tempdir()?;
     let seed_bob = [2u8; 64];
-    let _bob_provider = CashuProtectedPaymentProvider::new(&mint_url, temp_dir_bob.path(), seed_bob)?;
+    let _bob_provider =
+        CashuProtectedPaymentProvider::new(&mint_url, temp_dir_bob.path(), seed_bob)?;
     println!("✅ Bob wallet initialized");
 
     // Step 1: Alice checks balance / prepares funding
@@ -73,7 +76,10 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref cond) = create_req.locking_conditions {
         println!("🔒 Locking Conditions:");
         println!("   - Recipient P2PK: {}", cond.recipient_pubkey);
-        println!("   - Refund Pubkey:  {}", cond.refund_pubkey.as_deref().unwrap_or(""));
+        println!(
+            "   - Refund Pubkey:  {}",
+            cond.refund_pubkey.as_deref().unwrap_or("")
+        );
         println!("   - Locktime:       {}", locktime.to_rfc3339());
     }
 

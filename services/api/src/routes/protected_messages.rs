@@ -5,6 +5,7 @@ use axum::{
     Json, Router,
 };
 use chrono::Utc;
+use std::str::FromStr;
 use uuid::Uuid;
 
 use crate::{
@@ -19,9 +20,15 @@ use crate::{
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/users/:username/payment-profile", get(get_payment_profile_handler))
+        .route(
+            "/users/:username/payment-profile",
+            get(get_payment_profile_handler),
+        )
         .route("/me/payment-keys", put(update_payment_keys_handler))
-        .route("/protected-messages", post(create_protected_message_handler))
+        .route(
+            "/protected-messages",
+            post(create_protected_message_handler),
+        )
         .route("/protected-messages/inbox", get(get_inbox_handler))
         .route("/protected-messages/outbox", get(get_outbox_handler))
         .route("/protected-messages/:id", get(get_message_by_id_handler))
@@ -40,7 +47,10 @@ pub async fn get_payment_profile_handler(
 
     match profile {
         Some(p) => Ok(Json(p)),
-        None => Err(ApiError::NotFound(format!("User '@{}' not found or has not published payment keys", username.strip_prefix('@').unwrap_or(&username)))),
+        None => Err(ApiError::NotFound(format!(
+            "User '@{}' not found or has not published payment keys",
+            username.strip_prefix('@').unwrap_or(&username)
+        ))),
     }
 }
 
@@ -50,11 +60,23 @@ pub async fn update_payment_keys_handler(
     auth_user: AuthUser,
     Json(payload): Json<UpdatePaymentKeysRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>)> {
-    if payload.protected_payment_pubkey.trim().is_empty() {
-        return Err(ApiError::BadRequest("Protected payment public key cannot be empty".into()));
+    let clean_p2pk = payload.protected_payment_pubkey.trim();
+    if clean_p2pk.len() != 66 || (!clean_p2pk.starts_with("02") && !clean_p2pk.starts_with("03")) {
+        return Err(ApiError::BadRequest(
+            "Protected payment public key must be a 33-byte compressed secp256k1 hex string (66 chars, 02/03 prefix)".into(),
+        ));
     }
-    if payload.transport_encryption_pubkey.trim().is_empty() {
-        return Err(ApiError::BadRequest("Transport encryption public key cannot be empty".into()));
+    if secp256k1::PublicKey::from_str(clean_p2pk).is_err() {
+        return Err(ApiError::BadRequest(
+            "Invalid secp256k1 elliptic curve public key point".into(),
+        ));
+    }
+
+    let clean_transport = payload.transport_encryption_pubkey.trim();
+    if clean_transport.len() != 64 || hex::decode(clean_transport).is_err() {
+        return Err(ApiError::BadRequest(
+            "Transport encryption public key must be a 32-byte X25519 hex string (64 chars)".into(),
+        ));
     }
 
     state
@@ -81,7 +103,10 @@ pub async fn create_protected_message_handler(
     auth_user: AuthUser,
     Json(payload): Json<CreateProtectedMessageRequest>,
 ) -> Result<(StatusCode, Json<ProtectedMessageResponse>)> {
-    let clean_recipient = payload.recipient_username.strip_prefix('@').unwrap_or(&payload.recipient_username);
+    let clean_recipient = payload
+        .recipient_username
+        .strip_prefix('@')
+        .unwrap_or(&payload.recipient_username);
 
     // Look up recipient user ID
     let recipient_user = state
@@ -90,7 +115,10 @@ pub async fn create_protected_message_handler(
         .await?;
 
     let recipient = recipient_user.ok_or_else(|| {
-        ApiError::NotFound(format!("Recipient user '@{}' does not exist", clean_recipient))
+        ApiError::NotFound(format!(
+            "Recipient user '@{}' does not exist",
+            clean_recipient
+        ))
     })?;
 
     let message_id = Uuid::new_v4();
@@ -154,8 +182,11 @@ pub async fn get_message_by_id_handler(
         .ok_or_else(|| ApiError::NotFound(format!("Protected message '{id}' not found")))?;
 
     // Object-level authorization check: user must be sender or recipient
-    if message.sender_user_id != auth_user.user_id && message.recipient_user_id != auth_user.user_id {
-        return Err(ApiError::BadRequest("Unauthorized: You do not have permission to view this message".into()));
+    if message.sender_user_id != auth_user.user_id && message.recipient_user_id != auth_user.user_id
+    {
+        return Err(ApiError::BadRequest(
+            "Unauthorized: You do not have permission to view this message".into(),
+        ));
     }
 
     Ok(Json(message.into()))
@@ -175,8 +206,11 @@ pub async fn ack_message_handler(
         .ok_or_else(|| ApiError::NotFound(format!("Protected message '{id}' not found")))?;
 
     // Only sender or recipient can acknowledge/update status
-    if message.sender_user_id != auth_user.user_id && message.recipient_user_id != auth_user.user_id {
-        return Err(ApiError::BadRequest("Unauthorized: You do not have permission to update this message".into()));
+    if message.sender_user_id != auth_user.user_id && message.recipient_user_id != auth_user.user_id
+    {
+        return Err(ApiError::BadRequest(
+            "Unauthorized: You do not have permission to update this message".into(),
+        ));
     }
 
     let new_status = payload.status.unwrap_or_else(|| "acknowledged".to_string());

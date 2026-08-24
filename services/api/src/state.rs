@@ -51,10 +51,13 @@ impl AppState {
 
         let protected_message_repo: Arc<dyn ProtectedMessageRepository> = match &pool {
             Some(p) => Arc::new(PgProtectedMessageRepository::new(p.clone())),
-            None => Arc::new(InMemoryProtectedMessageRepository::new(Some(user_repo.clone()))),
+            None => Arc::new(InMemoryProtectedMessageRepository::new(Some(
+                user_repo.clone(),
+            ))),
         };
 
-        let lightning_provider: Arc<dyn LightningProvider> = Arc::new(MockLightningProvider::new(100_000));
+        let lightning_provider: Arc<dyn LightningProvider> =
+            Arc::new(MockLightningProvider::new(100_000));
         let cashu_bridge = Arc::new(CashuLightningBridge::new(&config.mint_url));
 
         Self {

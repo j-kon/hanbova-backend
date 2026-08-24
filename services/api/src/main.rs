@@ -166,13 +166,88 @@ mod tests {
     async fn test_create_get_and_claim_payment_intent() {
         let app = setup_test_app();
 
-        // 1. Create Protected Payment Intent
+        // 1. Register Alice (Sender)
+        let alice_payload = serde_json::json!({
+            "username": "alice",
+            "email": "alice@hanbova.africa",
+            "first_name": "Alice",
+            "last_name": "Sender",
+            "phone": "+2348000000001",
+            "password": "StrongPassword2026!"
+        });
+        let alice_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&alice_payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let alice_body = alice_res.into_body().collect().await.unwrap().to_bytes();
+        let alice_json: Value = serde_json::from_slice(&alice_body).unwrap();
+        let alice_token = alice_json["access_token"].as_str().unwrap();
+
+        // 2. Register Bob (Recipient)
+        let bob_payload = serde_json::json!({
+            "username": "bob",
+            "email": "bob@hanbova.africa",
+            "first_name": "Bob",
+            "last_name": "Recipient",
+            "phone": "+2348000000002",
+            "password": "StrongPassword2026!"
+        });
+        let bob_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&bob_payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bob_body = bob_res.into_body().collect().await.unwrap().to_bytes();
+        let bob_json: Value = serde_json::from_slice(&bob_body).unwrap();
+        let bob_token = bob_json["access_token"].as_str().unwrap();
+
+        // 3. Register Charlie (Third Party)
+        let charlie_payload = serde_json::json!({
+            "username": "charlie",
+            "email": "charlie@hanbova.africa",
+            "first_name": "Charlie",
+            "last_name": "Attacker",
+            "phone": "+2348000000003",
+            "password": "StrongPassword2026!"
+        });
+        let charlie_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&charlie_payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let charlie_body = charlie_res.into_body().collect().await.unwrap().to_bytes();
+        let charlie_json: Value = serde_json::from_slice(&charlie_body).unwrap();
+        let charlie_token = charlie_json["access_token"].as_str().unwrap();
+
+        // 4. Alice creates Protected Payment Intent for Bob
         let payload = serde_json::json!({
             "payment_type": "protected",
             "amount_sats": 21000,
-            "recipient_identifier": "merchant@hanbova.africa",
+            "recipient_identifier": "@bob",
             "description": "Artisan coffee order #402",
-            "claim_window_seconds": 3600
+            "expires_in_seconds": 3600
         });
 
         let response = app
@@ -182,6 +257,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/v1/payment-intents")
                     .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {alice_token}"))
                     .body(Body::from(serde_json::to_vec(&payload).unwrap()))
                     .unwrap(),
             )
@@ -192,57 +268,79 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["payment_type"], "protected");
-        assert_eq!(json["status"], "claimable");
+        assert_eq!(json["status"], "protected");
         assert_eq!(json["amount_sats"], 21000);
-        assert_eq!(json["recipient_identifier"], "merchant@hanbova.africa");
+        assert_eq!(json["recipient_identifier"], "@bob");
         assert!(json["claim_reference"].is_string());
 
         let id = json["id"].as_str().unwrap();
 
-        // 2. Fetch by ID
-        let get_response = app
+        // 5. Alice fetches by ID -> 200 OK
+        let get_alice = app
             .clone()
             .oneshot(
                 Request::builder()
                     .uri(format!("/api/v1/payment-intents/{id}"))
+                    .header("authorization", format!("Bearer {alice_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
+        assert_eq!(get_alice.status(), StatusCode::OK);
 
-        assert_eq!(get_response.status(), StatusCode::OK);
-        let get_body = get_response.into_body().collect().await.unwrap().to_bytes();
-        let get_json: Value = serde_json::from_slice(&get_body).unwrap();
-        assert_eq!(get_json["id"], id);
-        assert_eq!(get_json["amount_sats"], 21000);
+        // 6. Charlie attempts to fetch Alice's intent -> 403 Forbidden
+        let get_charlie = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/payment-intents/{id}"))
+                    .header("authorization", format!("Bearer {charlie_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_charlie.status(), StatusCode::FORBIDDEN);
 
-        // 3. Status Coordination Update after Client Mint Settlement
-        let status_payload = serde_json::json!({
-            "status": "claimed"
-        });
-
-        let status_response = app
+        // 7. Charlie attempts to claim -> 403 Forbidden
+        let charlie_claim = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri(format!("/api/v1/payment-intents/{id}/status"))
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&status_payload).unwrap()))
+                    .header("authorization", format!("Bearer {charlie_token}"))
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({"status": "claimed"})).unwrap(),
+                    ))
                     .unwrap(),
             )
             .await
             .unwrap();
+        assert_eq!(charlie_claim.status(), StatusCode::FORBIDDEN);
 
-        assert_eq!(status_response.status(), StatusCode::OK);
-        let status_body = status_response
-            .into_body()
-            .collect()
+        // 8. Bob (Recipient) updates status to claimed -> 200 OK
+        let bob_claim = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/payment-intents/{id}/status"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {bob_token}"))
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({"status": "claimed"})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
             .await
-            .unwrap()
-            .to_bytes();
-        let status_json: Value = serde_json::from_slice(&status_body).unwrap();
-        assert_eq!(status_json["status"], "claimed");
+            .unwrap();
+        assert_eq!(bob_claim.status(), StatusCode::OK);
+        let bob_body = bob_claim.into_body().collect().await.unwrap().to_bytes();
+        let bob_json: Value = serde_json::from_slice(&bob_body).unwrap();
+        assert_eq!(bob_json["status"], "claimed");
     }
 
     #[tokio::test]
@@ -609,7 +707,8 @@ mod tests {
         );
 
         // 6. Alice sends End-to-End Encrypted Envelope to Bob
-        let mock_ciphertext = "enc_v1:98fae83b109dc08a9c8b7e6f5d4c3b2a10:opaque_authenticated_ciphertext_payload";
+        let mock_ciphertext =
+            "enc_v1:98fae83b109dc08a9c8b7e6f5d4c3b2a10:opaque_authenticated_ciphertext_payload";
         let message_payload = serde_json::json!({
             "recipient_username": "@bob",
             "encrypted_payload": mock_ciphertext,
@@ -761,4 +860,3 @@ mod tests {
         assert_eq!(pay_json["status"], "succeeded");
     }
 }
-

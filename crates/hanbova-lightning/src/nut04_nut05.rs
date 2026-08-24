@@ -1,7 +1,7 @@
 //! Cashu NUT-04 (Mint via Lightning) & NUT-05 (Melt via Lightning) Client Bridge
 
-use serde::{Deserialize, Serialize};
 use crate::error::{LightningError, Result};
+use serde::{Deserialize, Serialize};
 
 /// Request to request a Lightning invoice from a Cashu mint to deposit/mint sats (NUT-04)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,7 +52,10 @@ impl CashuLightningBridge {
 
     /// Request a Lightning invoice to mint ecash (NUT-04)
     pub async fn create_mint_quote(&self, amount_sats: u64) -> Result<MintQuoteResponse> {
-        let url = format!("{}/v1/mint/quote/bolt11", self.mint_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/v1/mint/quote/bolt11",
+            self.mint_url.trim_end_matches('/')
+        );
         let body = MintQuoteRequest {
             amount: amount_sats,
             unit: "sat".to_string(),
@@ -73,10 +76,9 @@ impl CashuLightningBridge {
             )));
         }
 
-        let quote: MintQuoteResponse = resp
-            .json()
-            .await
-            .map_err(|e| LightningError::ProviderError(format!("Failed to parse mint quote: {e}")))?;
+        let quote: MintQuoteResponse = resp.json().await.map_err(|e| {
+            LightningError::ProviderError(format!("Failed to parse mint quote: {e}"))
+        })?;
 
         Ok(quote)
     }
@@ -89,12 +91,10 @@ impl CashuLightningBridge {
             quote_id
         );
 
-        let resp = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| LightningError::ProviderError(format!("Check quote HTTP failed: {e}")))?;
+        let resp =
+            self.http_client.get(&url).send().await.map_err(|e| {
+                LightningError::ProviderError(format!("Check quote HTTP failed: {e}"))
+            })?;
 
         if !resp.status().is_success() {
             let err_text = resp.text().await.unwrap_or_default();
@@ -103,17 +103,19 @@ impl CashuLightningBridge {
             )));
         }
 
-        let quote: MintQuoteResponse = resp
-            .json()
-            .await
-            .map_err(|e| LightningError::ProviderError(format!("Failed to parse quote state: {e}")))?;
+        let quote: MintQuoteResponse = resp.json().await.map_err(|e| {
+            LightningError::ProviderError(format!("Failed to parse quote state: {e}"))
+        })?;
 
         Ok(quote)
     }
 
     /// Request a quote to pay a BOLT11 invoice using ecash (NUT-05)
     pub async fn create_melt_quote(&self, bolt11: &str) -> Result<MeltQuoteResponse> {
-        let url = format!("{}/v1/melt/quote/bolt11", self.mint_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/v1/melt/quote/bolt11",
+            self.mint_url.trim_end_matches('/')
+        );
         let body = MeltQuoteRequest {
             request: bolt11.to_string(),
             unit: "sat".to_string(),
@@ -134,10 +136,9 @@ impl CashuLightningBridge {
             )));
         }
 
-        let quote: MeltQuoteResponse = resp
-            .json()
-            .await
-            .map_err(|e| LightningError::ProviderError(format!("Failed to parse melt quote: {e}")))?;
+        let quote: MeltQuoteResponse = resp.json().await.map_err(|e| {
+            LightningError::ProviderError(format!("Failed to parse melt quote: {e}"))
+        })?;
 
         Ok(quote)
     }

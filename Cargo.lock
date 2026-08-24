@@ -1219,6 +1219,7 @@ dependencies = [
  "http-body-util",
  "jsonwebtoken",
  "rand 0.8.7",
+ "secp256k1",
  "serde",
  "serde_json",
  "sha2",
@@ -1229,6 +1230,22 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "hanbova-cdk-ffi"
+version = "0.1.0"
+dependencies = [
+ "cdk",
+ "cdk-redb",
+ "hex",
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
  "uuid",
 ]
 
