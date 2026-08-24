@@ -33,6 +33,25 @@ services:
     volumes:
       - nutshell_data:/app/data
 
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hanbova-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8080
+      - DATABASE_URL=postgres://${POSTGRES_USER:-hanbova}:${POSTGRES_PASSWORD:-hanbova}@postgres:5432/${POSTGRES_DB:-hanbova}
+      - JWT_SECRET=hanbova_docker_deployment_super_secret_jwt_key_32_bytes!
+      - CASHU_MINT_URL=http://cashu-mint:3338
+      - RUST_LOG=info,hanbova_api=debug
+    ports:
+      - "${API_PORT:-8080}:8080"
+
 volumes:
   pgdata:
     driver: local
