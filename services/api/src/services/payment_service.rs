@@ -1,17 +1,14 @@
 use chrono::{Duration, Utc};
 use hanbova_core::{PaymentIntent, PaymentStatus, PaymentType, SatoshiAmount};
 use hanbova_protected_payments::{
-    ClaimPaymentRequest, CreateProtectedPaymentRequest, LockingConditions,
-    ProtectedPaymentProvider, RefundPaymentRequest,
+    CreateProtectedPaymentRequest, LockingConditions, ProtectedPaymentProvider,
 };
 use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
     error::{ApiError, Result},
-    models::{
-        ClaimIntentRequest, CreatePaymentIntentRequest, PaymentIntentResponse, RefundIntentRequest,
-    },
+    models::{CreatePaymentIntentRequest, PaymentIntentResponse},
     repositories::PaymentIntentRepository,
 };
 
@@ -122,51 +119,20 @@ impl PaymentService {
         Ok(intents.into_iter().map(Into::into).collect())
     }
 
-    pub async fn claim_payment_intent(
+    /// Updates the coordination status of a payment intent after client-side Cashu mint settlement.
+    pub async fn update_payment_status(
         &self,
         payment_id: Uuid,
-        req: ClaimIntentRequest,
+        new_status: PaymentStatus,
     ) -> Result<PaymentIntentResponse> {
-        let mut intent =
-            self.repo.find_by_id(payment_id).await?.ok_or_else(|| {
-                ApiError::NotFound(format!("Payment intent {payment_id} not found"))
-            })?;
+        let mut intent = self
+            .repo
+            .find_by_id(payment_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(format!("Payment intent {payment_id} not found")))?;
 
-        let claim_req = ClaimPaymentRequest {
-            payment_id,
-            claim_proof: req.claim_proof,
-            claimer_identifier: req.claimer_identifier,
-            cashu_token: req.cashu_token,
-        };
-
-        let receipt = self.protected_provider.claim_payment(claim_req).await?;
-        intent.status = receipt.status;
-        intent.updated_at = Utc::now();
-
-        self.repo.save(&intent).await?;
-
-        Ok(intent.into())
-    }
-
-    pub async fn refund_payment_intent(
-        &self,
-        payment_id: Uuid,
-        req: RefundIntentRequest,
-    ) -> Result<PaymentIntentResponse> {
-        let mut intent =
-            self.repo.find_by_id(payment_id).await?.ok_or_else(|| {
-                ApiError::NotFound(format!("Payment intent {payment_id} not found"))
-            })?;
-
-        let refund_req = RefundPaymentRequest {
-            payment_id,
-            sender_id: req.sender_id,
-            refund_proof: req.refund_proof,
-            cashu_token: req.cashu_token,
-        };
-
-        let receipt = self.protected_provider.refund_payment(refund_req).await?;
-        intent.status = receipt.status;
+        // Validate state machine transition
+        intent.status = intent.status.transition_to(new_status)?;
         intent.updated_at = Utc::now();
 
         self.repo.save(&intent).await?;

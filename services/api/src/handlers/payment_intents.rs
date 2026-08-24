@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::{
     error::ApiError,
     models::{
-        ClaimIntentRequest, CreatePaymentIntentRequest, PaymentIntentResponse, RefundIntentRequest,
+        CreatePaymentIntentRequest, PaymentIntentResponse, UpdatePaymentStatusRequest,
     },
     state::AppState,
 };
@@ -37,26 +37,14 @@ pub async fn list_payment_intents(
     Ok(Json(response))
 }
 
-pub async fn claim_payment_intent(
+pub async fn update_payment_intent_status(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-    Json(payload): Json<ClaimIntentRequest>,
+    Json(payload): Json<UpdatePaymentStatusRequest>,
 ) -> Result<Json<PaymentIntentResponse>, ApiError> {
     let response = state
         .payment_service
-        .claim_payment_intent(id, payload)
-        .await?;
-    Ok(Json(response))
-}
-
-pub async fn refund_payment_intent(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(payload): Json<RefundIntentRequest>,
-) -> Result<Json<PaymentIntentResponse>, ApiError> {
-    let response = state
-        .payment_service
-        .refund_payment_intent(id, payload)
+        .update_payment_status(id, payload.status)
         .await?;
     Ok(Json(response))
 }

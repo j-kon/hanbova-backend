@@ -12,7 +12,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Hanbova Contributors"]
 license = "MIT"
-repository = "https://github.com/hanbova/hanbova"
+repository = "https://github.com/j-kon/hanbova-backend"
 
 [workspace.dependencies]
 # Internal crates

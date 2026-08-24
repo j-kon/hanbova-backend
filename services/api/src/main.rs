@@ -217,33 +217,32 @@ mod tests {
         assert_eq!(get_json["id"], id);
         assert_eq!(get_json["amount_sats"], 21000);
 
-        // 3. Claim Payment Intent
-        let claim_payload = serde_json::json!({
-            "claim_proof": "valid_signature_proof",
-            "claimer_identifier": "merchant@hanbova.africa"
+        // 3. Status Coordination Update after Client Mint Settlement
+        let status_payload = serde_json::json!({
+            "status": "claimed"
         });
 
-        let claim_response = app
+        let status_response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/api/v1/payment-intents/{id}/claim"))
+                    .uri(format!("/api/v1/payment-intents/{id}/status"))
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&claim_payload).unwrap()))
+                    .body(Body::from(serde_json::to_vec(&status_payload).unwrap()))
                     .unwrap(),
             )
             .await
             .unwrap();
 
-        assert_eq!(claim_response.status(), StatusCode::OK);
-        let claim_body = claim_response
+        assert_eq!(status_response.status(), StatusCode::OK);
+        let status_body = status_response
             .into_body()
             .collect()
             .await
             .unwrap()
             .to_bytes();
-        let claim_json: Value = serde_json::from_slice(&claim_body).unwrap();
-        assert_eq!(claim_json["status"], "claimed");
+        let status_json: Value = serde_json::from_slice(&status_body).unwrap();
+        assert_eq!(status_json["status"], "claimed");
     }
 
     #[tokio::test]

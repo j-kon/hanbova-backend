@@ -17,20 +17,10 @@ pub struct CreatePaymentIntentRequest {
     pub cashu_mint_url: Option<String>,
 }
 
-/// Request payload to claim a protected payment.
+/// Request payload to update payment intent status after client-side mint settlement.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClaimIntentRequest {
-    pub claim_proof: String,
-    pub claimer_identifier: String,
-    pub cashu_token: Option<String>,
-}
-
-/// Request payload to refund an expired protected payment.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RefundIntentRequest {
-    pub sender_id: String,
-    pub refund_proof: Option<String>,
-    pub cashu_token: Option<String>,
+pub struct UpdatePaymentStatusRequest {
+    pub status: PaymentStatus,
 }
 
 /// Response payload representing a Payment Intent.

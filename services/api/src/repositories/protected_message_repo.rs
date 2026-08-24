@@ -303,7 +303,7 @@ impl ProtectedMessageRepository for InMemoryProtectedMessageRepository {
             .filter(|v| v.recipient_user_id == recipient_user_id)
             .cloned()
             .collect();
-        list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        list.sort_by_key(|b| std::cmp::Reverse(b.created_at));
         Ok(list)
     }
 
@@ -314,7 +314,7 @@ impl ProtectedMessageRepository for InMemoryProtectedMessageRepository {
             .filter(|v| v.sender_user_id == sender_user_id)
             .cloned()
             .collect();
-        list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        list.sort_by_key(|b| std::cmp::Reverse(b.created_at));
         Ok(list)
     }
 
