@@ -121,7 +121,11 @@ pub extern "C" fn hanbova_cdk_wallet_create(
         }
     };
 
-    let db_path_buf = Path::new(db_path_str).to_path_buf();
+    let db_path_buf = if Path::new(db_path_str).is_dir() {
+        Path::new(db_path_str).join("wallet.redb")
+    } else {
+        Path::new(db_path_str).to_path_buf()
+    };
     if let Some(parent) = db_path_buf.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

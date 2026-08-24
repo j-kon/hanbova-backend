@@ -46,7 +46,16 @@ struct TrackedPayment {
 impl CashuProtectedPaymentProvider {
     /// Creates a new `CashuProtectedPaymentProvider` backed by Redb wallet storage.
     pub fn new(mint_url: &str, storage_dir: &Path, seed: [u8; 64]) -> Result<Self> {
-        let db = WalletRedbDatabase::new(storage_dir)
+        let db_path = if storage_dir.is_dir() {
+            storage_dir.join("wallet.redb")
+        } else {
+            storage_dir.to_path_buf()
+        };
+        if let Some(parent) = db_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        let db = WalletRedbDatabase::new(&db_path)
             .map_err(|e| ProtectedPaymentError::Cdk(format!("Failed to open Redb storage: {e}")))?;
 
         let wallet =
