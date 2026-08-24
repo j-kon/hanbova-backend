@@ -1,0 +1,5 @@
+framework module HanbovaCdkFfi {
+  umbrella header "hanbova_cdk_ffi.h"
+  export *
+  module * { export * }
+}
