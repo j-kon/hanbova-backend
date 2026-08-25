@@ -274,6 +274,115 @@ pub extern "C" fn hanbova_cdk_mint(
 }
 
 #[no_mangle]
+pub extern "C" fn hanbova_cdk_melt_quote(
+    handle: *mut CdkWalletHandle,
+    invoice: *const c_char,
+    out_quote_id: *mut *mut c_char,
+    out_amount_sats: *mut u64,
+    out_fee_reserve_sats: *mut u64,
+) -> c_int {
+    if handle.is_null()
+        || invoice.is_null()
+        || out_quote_id.is_null()
+        || out_amount_sats.is_null()
+        || out_fee_reserve_sats.is_null()
+    {
+        set_last_error("Null pointer provided to hanbova_cdk_melt_quote");
+        return 1;
+    }
+
+    let inv_str = match unsafe { CStr::from_ptr(invoice) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("Invalid invoice UTF-8: {e}"));
+            return 2;
+        }
+    };
+
+    let h = unsafe { &*handle };
+    let res: Result<(String, u64, u64), String> = h.rt.block_on(async {
+        let method = PaymentMethod::from_str("bolt11").map_err(|e| e.to_string())?;
+        let quote = h
+            .wallet
+            .melt_quote(method, inv_str, None, None)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok((
+            quote.id,
+            u64::from(quote.amount),
+            u64::from(quote.fee_reserve),
+        ))
+    });
+
+    match res {
+        Ok((qid, amt, fee)) => {
+            unsafe {
+                *out_quote_id = CString::new(qid).unwrap().into_raw();
+                *out_amount_sats = amt;
+                *out_fee_reserve_sats = fee;
+            }
+            0
+        }
+        Err(e) => {
+            set_last_error(&format!("Failed to create melt quote: {e}"));
+            3
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn hanbova_cdk_melt(
+    handle: *mut CdkWalletHandle,
+    quote_id: *const c_char,
+    out_paid: *mut c_int,
+    out_preimage: *mut *mut c_char,
+) -> c_int {
+    if handle.is_null() || quote_id.is_null() || out_paid.is_null() || out_preimage.is_null() {
+        set_last_error("Null pointer provided to hanbova_cdk_melt");
+        return 1;
+    }
+
+    let qid_str = match unsafe { CStr::from_ptr(quote_id) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("Invalid quote_id UTF-8: {e}"));
+            return 2;
+        }
+    };
+
+    let h = unsafe { &*handle };
+    let res: Result<(bool, Option<String>), String> = h.rt.block_on(async {
+        let prepared = h
+            .wallet
+            .prepare_melt(qid_str, std::collections::HashMap::new())
+            .await
+            .map_err(|e| e.to_string())?;
+        let finalized = prepared.confirm().await.map_err(|e| e.to_string())?;
+        let is_paid = finalized.state() == cdk::nuts::MeltQuoteState::Paid;
+        let preimage = finalized.payment_proof().map(|s| s.to_string());
+        Ok((is_paid, preimage))
+    });
+
+    match res {
+        Ok((paid, preimage_opt)) => {
+            unsafe {
+                *out_paid = if paid { 1 } else { 0 };
+                if let Some(preimage) = preimage_opt {
+                    *out_preimage = CString::new(preimage).unwrap().into_raw();
+                } else {
+                    *out_preimage = std::ptr::null_mut();
+                }
+            }
+            0
+        }
+        Err(e) => {
+            set_last_error(&format!("Failed to melt quote: {e}"));
+            3
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn hanbova_cdk_prepare_p2pk_send(
     handle: *mut CdkWalletHandle,
     amount_sats: u64,

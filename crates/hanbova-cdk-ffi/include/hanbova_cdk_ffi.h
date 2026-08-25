@@ -38,6 +38,21 @@ int hanbova_cdk_mint(
     uint64_t* out_minted_amount
 );
 
+int hanbova_cdk_melt_quote(
+    CdkWalletHandle* handle,
+    const char* invoice,
+    char** out_quote_id,
+    uint64_t* out_amount_sats,
+    uint64_t* out_fee_reserve_sats
+);
+
+int hanbova_cdk_melt(
+    CdkWalletHandle* handle,
+    const char* quote_id,
+    int* out_paid,
+    char** out_preimage
+);
+
 int hanbova_cdk_prepare_p2pk_send(
     CdkWalletHandle* handle,
     uint64_t amount,
