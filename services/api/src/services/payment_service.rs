@@ -98,6 +98,41 @@ impl PaymentService {
         Ok(response)
     }
 
+    pub async fn get_payment_intent_by_reference(
+        &self,
+        reference: &str,
+        user_id: Option<&str>,
+        username: Option<&str>,
+    ) -> Result<PaymentIntentResponse> {
+        let intent = self
+            .repo
+            .find_by_reference(reference)
+            .await?
+            .ok_or_else(|| {
+                ApiError::NotFound(format!(
+                    "Payment intent with reference '{reference}' not found"
+                ))
+            })?;
+
+        if let Some(uid) = user_id {
+            let is_sender = intent
+                .sender_id
+                .as_deref()
+                .map(|s| matches_actor(uid, username, s))
+                .unwrap_or(false);
+            let is_recipient = matches_actor(uid, username, &intent.recipient_identifier);
+
+            if !is_sender && !is_recipient {
+                return Err(ApiError::Forbidden(
+                    "You do not have permission to access this payment intent".into(),
+                ));
+            }
+        }
+
+        let response: PaymentIntentResponse = intent.into();
+        Ok(response)
+    }
+
     pub async fn list_user_payment_intents(
         &self,
         user_id: &str,

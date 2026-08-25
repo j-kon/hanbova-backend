@@ -274,6 +274,102 @@ mod tests {
         assert!(json["claim_reference"].is_string());
 
         let id = json["id"].as_str().unwrap();
+        let claim_ref_1 = json["claim_reference"].as_str().unwrap().to_string();
+
+        // 4b. Alice creates a SECOND Protected Payment Intent for Bob (35000 sats)
+        let payload_2 = serde_json::json!({
+            "payment_type": "protected",
+            "amount_sats": 35000,
+            "recipient_identifier": "@bob",
+            "description": "Design milestone #2",
+            "expires_in_seconds": 3600
+        });
+        let response_2 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/payment-intents")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {alice_token}"))
+                    .body(Body::from(serde_json::to_vec(&payload_2).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response_2.status(), StatusCode::CREATED);
+        let body_2 = response_2.into_body().collect().await.unwrap().to_bytes();
+        let json_2: Value = serde_json::from_slice(&body_2).unwrap();
+        let id_2 = json_2["id"].as_str().unwrap();
+        let claim_ref_2 = json_2["claim_reference"].as_str().unwrap().to_string();
+        assert_ne!(id, id_2);
+        assert_ne!(claim_ref_1, claim_ref_2);
+
+        // 4c. Claim Reference Lookup: Bob looks up Intent 1 by exact reference -> Returns ONLY Intent 1
+        let lookup_ref_1 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/payment-intents/by-reference/{claim_ref_1}"))
+                    .header("authorization", format!("Bearer {bob_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lookup_ref_1.status(), StatusCode::OK);
+        let ref_1_body = lookup_ref_1.into_body().collect().await.unwrap().to_bytes();
+        let ref_1_json: Value = serde_json::from_slice(&ref_1_body).unwrap();
+        assert_eq!(ref_1_json["id"], id);
+        assert_eq!(ref_1_json["amount_sats"], 21000);
+        assert_eq!(ref_1_json["claim_reference"], claim_ref_1);
+
+        // 4d. Claim Reference Lookup: Bob looks up Intent 2 by exact reference -> Returns ONLY Intent 2
+        let lookup_ref_2 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/payment-intents/by-reference/{claim_ref_2}"))
+                    .header("authorization", format!("Bearer {bob_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lookup_ref_2.status(), StatusCode::OK);
+        let ref_2_body = lookup_ref_2.into_body().collect().await.unwrap().to_bytes();
+        let ref_2_json: Value = serde_json::from_slice(&ref_2_body).unwrap();
+        assert_eq!(ref_2_json["id"], id_2);
+        assert_eq!(ref_2_json["amount_sats"], 35000);
+        assert_eq!(ref_2_json["claim_reference"], claim_ref_2);
+
+        // 4e. Claim Reference Lookup: Non-existent reference returns 404 NOT FOUND
+        let lookup_nonexistent = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/payment-intents/by-reference/hnbv_claim_nonexistent_123")
+                    .header("authorization", format!("Bearer {bob_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lookup_nonexistent.status(), StatusCode::NOT_FOUND);
+
+        // 4f. Claim Reference Lookup: Unauthorized third-party (Charlie) gets 403 FORBIDDEN
+        let lookup_charlie = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/payment-intents/by-reference/{claim_ref_1}"))
+                    .header("authorization", format!("Bearer {charlie_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lookup_charlie.status(), StatusCode::FORBIDDEN);
 
         // 5. Alice fetches by ID -> 200 OK
         let get_alice = app

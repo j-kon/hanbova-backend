@@ -37,6 +37,23 @@ pub async fn get_payment_intent(
     Ok(Json(response))
 }
 
+pub async fn get_payment_intent_by_reference(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path(reference): Path<String>,
+) -> Result<Json<PaymentIntentResponse>, ApiError> {
+    let user_id_str = auth_user.user_id.to_string();
+    let response = state
+        .payment_service
+        .get_payment_intent_by_reference(
+            &reference,
+            Some(&user_id_str),
+            Some(&auth_user.username),
+        )
+        .await?;
+    Ok(Json(response))
+}
+
 pub async fn list_payment_intents(
     State(state): State<AppState>,
     auth_user: AuthUser,

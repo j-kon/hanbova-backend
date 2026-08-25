@@ -14,6 +14,7 @@ pub type Result<T> = std::result::Result<T, ApiError>;
 pub trait PaymentIntentRepository: Send + Sync {
     async fn save(&self, intent: &PaymentIntent) -> Result<()>;
     async fn find_by_id(&self, id: Uuid) -> Result<Option<PaymentIntent>>;
+    async fn find_by_reference(&self, reference: &str) -> Result<Option<PaymentIntent>>;
     async fn list_all(&self) -> Result<Vec<PaymentIntent>>;
     async fn find_by_user(&self, user_identifier: &str) -> Result<Vec<PaymentIntent>>;
     async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<()>;
@@ -75,6 +76,53 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
             "#,
         )
         .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                let id: Uuid = row.get("id");
+                let payment_type_str: String = row.get("payment_type");
+                let status_str: String = row.get("status");
+                let amount_sats: i64 = row.get("amount_sats");
+                let sender_id: Option<String> = row.get("sender_id");
+                let recipient_identifier: String = row.get("recipient_identifier");
+                let description: Option<String> = row.get("description");
+                let expires_at: Option<DateTime<Utc>> = row.get("expires_at");
+                let claim_reference: Option<String> = row.get("claim_reference");
+                let created_at: DateTime<Utc> = row.get("created_at");
+                let updated_at: DateTime<Utc> = row.get("updated_at");
+
+                let payment_type = payment_type_str.parse().map_err(ApiError::BadRequest)?;
+                let status = status_str.parse().map_err(ApiError::BadRequest)?;
+
+                Ok(Some(PaymentIntent {
+                    id,
+                    payment_type,
+                    status,
+                    amount_sats: SatoshiAmount::from_sats(amount_sats as u64),
+                    sender_id,
+                    recipient_identifier,
+                    description,
+                    expires_at,
+                    claim_reference,
+                    created_at,
+                    updated_at,
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn find_by_reference(&self, reference: &str) -> Result<Option<PaymentIntent>> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, payment_type, status, amount_sats, sender_id, recipient_identifier, description, expires_at, claim_reference, created_at, updated_at
+            FROM payment_intents
+            WHERE claim_reference = $1 OR id::text = $1
+            "#,
+        )
+        .bind(reference)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -256,6 +304,19 @@ impl PaymentIntentRepository for InMemoryPaymentIntentRepository {
     async fn find_by_id(&self, id: Uuid) -> Result<Option<PaymentIntent>> {
         let map = self.storage.read().await;
         Ok(map.get(&id).cloned())
+    }
+
+    async fn find_by_reference(&self, reference: &str) -> Result<Option<PaymentIntent>> {
+        let map = self.storage.read().await;
+        for intent in map.values() {
+            if intent.claim_reference.as_deref() == Some(reference)
+                || intent.id.to_string() == reference
+                || intent.id.simple().to_string() == reference
+            {
+                return Ok(Some(intent.clone()));
+            }
+        }
+        Ok(None)
     }
 
     async fn list_all(&self) -> Result<Vec<PaymentIntent>> {
