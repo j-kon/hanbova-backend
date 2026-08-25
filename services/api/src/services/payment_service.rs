@@ -52,7 +52,7 @@ impl PaymentService {
             PaymentType::Protected => {
                 let expiry = expires_at.unwrap_or_else(|| now + Duration::hours(24));
                 intent.expires_at = Some(expiry);
-                intent.status = PaymentStatus::Protected;
+                intent.status = PaymentStatus::Created;
                 let claim_ref = format!("hnbv_claim_{}", intent.id.simple());
                 intent.claim_reference = Some(claim_ref);
             }

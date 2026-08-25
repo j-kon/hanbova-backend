@@ -268,7 +268,7 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["payment_type"], "protected");
-        assert_eq!(json["status"], "protected");
+        assert_eq!(json["status"], "created");
         assert_eq!(json["amount_sats"], 21000);
         assert_eq!(json["recipient_identifier"], "@bob");
         assert!(json["claim_reference"].is_string());
@@ -398,6 +398,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(get_charlie.status(), StatusCode::FORBIDDEN);
+
+        // 6b. Alice client transitions status to Protected after CDK lock -> 200 OK
+        let alice_protect = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/payment-intents/{id}/status"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {alice_token}"))
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({"status": "protected"})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(alice_protect.status(), StatusCode::OK);
+
+        // 6c. Alice client transitions status to Claimable after relay send -> 200 OK
+        let alice_claimable = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/payment-intents/{id}/status"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {alice_token}"))
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({"status": "claimable"})).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(alice_claimable.status(), StatusCode::OK);
 
         // 7. Charlie attempts to claim -> 403 Forbidden
         let charlie_claim = app
