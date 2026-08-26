@@ -230,6 +230,53 @@ pub extern "C" fn hanbova_cdk_mint_quote(
 }
 
 #[no_mangle]
+pub extern "C" fn hanbova_cdk_check_mint_quote_status(
+    handle: *mut CdkWalletHandle,
+    quote_id: *const c_char,
+    out_state: *mut *mut c_char,
+    out_paid: *mut c_int,
+) -> c_int {
+    if handle.is_null() || quote_id.is_null() || out_state.is_null() || out_paid.is_null() {
+        set_last_error("Null pointer provided to hanbova_cdk_check_mint_quote_status");
+        return 1;
+    }
+
+    let quote_id_str = match unsafe { CStr::from_ptr(quote_id) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(&format!("Invalid quote_id UTF-8: {e}"));
+            return 2;
+        }
+    };
+
+    let h = unsafe { &*handle };
+    let res: Result<(String, bool), String> = h.rt.block_on(async {
+        let quote = h
+            .wallet
+            .check_mint_quote(quote_id_str)
+            .await
+            .map_err(|e| e.to_string())?;
+        let state_str = format!("{:?}", quote.state).to_uppercase();
+        let is_paid = quote.state == cdk::nuts::MintQuoteState::Paid;
+        Ok((state_str, is_paid))
+    });
+
+    match res {
+        Ok((state, is_paid)) => {
+            unsafe {
+                *out_state = CString::new(state).unwrap().into_raw();
+                *out_paid = if is_paid { 1 } else { 0 };
+            }
+            0
+        }
+        Err(e) => {
+            set_last_error(&format!("Failed to check mint quote status: {e}"));
+            3
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn hanbova_cdk_mint(
     handle: *mut CdkWalletHandle,
     quote_id: *const c_char,
@@ -669,6 +716,15 @@ mod tests {
         let rc_bal = hanbova_cdk_wallet_get_balance(handle, &mut spendable, &mut pending);
         assert_eq!(rc_bal, 0);
         assert_eq!(spendable, 0);
+
+        // Test check_mint_quote_status null checks
+        let invalid_rc = hanbova_cdk_check_mint_quote_status(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+        assert_eq!(invalid_rc, 1);
 
         hanbova_cdk_wallet_free(handle);
     }

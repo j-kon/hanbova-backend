@@ -32,6 +32,13 @@ int hanbova_cdk_mint_quote(
     char** out_invoice
 );
 
+int hanbova_cdk_check_mint_quote_status(
+    CdkWalletHandle* handle,
+    const char* quote_id,
+    char** out_state,
+    int* out_paid
+);
+
 int hanbova_cdk_mint(
     CdkWalletHandle* handle,
     const char* quote_id,
