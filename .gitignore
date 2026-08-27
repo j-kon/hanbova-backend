@@ -46,3 +46,6 @@ pgdata/
 # Coverage and test artifacts
 coverage/
 *.lcov
+
+# Isolated feature workspaces
+.worktrees/
