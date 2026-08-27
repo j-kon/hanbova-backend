@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub struct UserPaymentProfileResponse {
     pub username: String,
     pub handle: String,
+    pub wallet_environment: String,
     pub protected_payment_pubkey: String,
     pub transport_encryption_pubkey: String,
 }
@@ -14,6 +15,8 @@ pub struct UserPaymentProfileResponse {
 pub struct UpdatePaymentKeysRequest {
     pub protected_payment_pubkey: String,
     pub transport_encryption_pubkey: String,
+    #[serde(default)]
+    pub wallet_environment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +26,9 @@ pub struct CreateProtectedMessageRequest {
     #[serde(default = "default_payload_version")]
     pub payload_version: i32,
     pub payment_intent_id: Option<Uuid>,
+    pub recipient_transport_key_fingerprint: Option<String>,
+    pub recipient_p2pk_key_fingerprint: Option<String>,
+    pub wallet_environment: Option<String>,
 }
 
 fn default_payload_version() -> i32 {
@@ -40,6 +46,9 @@ pub struct ProtectedMessageRow {
     pub encrypted_payload: String,
     pub payload_version: i32,
     pub status: String,
+    pub recipient_transport_key_fingerprint: Option<String>,
+    pub recipient_p2pk_key_fingerprint: Option<String>,
+    pub wallet_environment: Option<String>,
     pub created_at: DateTime<Utc>,
     pub acknowledged_at: Option<DateTime<Utc>>,
 }
@@ -53,6 +62,9 @@ pub struct ProtectedMessageResponse {
     pub encrypted_payload: String,
     pub payload_version: i32,
     pub status: String,
+    pub recipient_transport_key_fingerprint: Option<String>,
+    pub recipient_p2pk_key_fingerprint: Option<String>,
+    pub wallet_environment: Option<String>,
     pub created_at: DateTime<Utc>,
     pub acknowledged_at: Option<DateTime<Utc>>,
 }
@@ -67,6 +79,9 @@ impl From<ProtectedMessageRow> for ProtectedMessageResponse {
             encrypted_payload: row.encrypted_payload,
             payload_version: row.payload_version,
             status: row.status,
+            recipient_transport_key_fingerprint: row.recipient_transport_key_fingerprint,
+            recipient_p2pk_key_fingerprint: row.recipient_p2pk_key_fingerprint,
+            wallet_environment: row.wallet_environment,
             created_at: row.created_at,
             acknowledged_at: row.acknowledged_at,
         }

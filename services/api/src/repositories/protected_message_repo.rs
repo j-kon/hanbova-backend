@@ -17,6 +17,7 @@ pub trait ProtectedMessageRepository: Send + Sync {
     async fn upsert_user_payment_keys(
         &self,
         user_id: Uuid,
+        wallet_environment: &str,
         protected_pubkey: &str,
         transport_pubkey: &str,
     ) -> Result<()>;
@@ -24,6 +25,7 @@ pub trait ProtectedMessageRepository: Send + Sync {
     async fn find_payment_profile_by_username(
         &self,
         username: &str,
+        wallet_environment: &str,
     ) -> Result<Option<UserPaymentProfileResponse>>;
 
     async fn save_message(&self, message: &ProtectedMessageRow) -> Result<()>;
@@ -59,20 +61,22 @@ impl ProtectedMessageRepository for PgProtectedMessageRepository {
     async fn upsert_user_payment_keys(
         &self,
         user_id: Uuid,
+        wallet_environment: &str,
         protected_pubkey: &str,
         transport_pubkey: &str,
     ) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO user_payment_keys (user_id, protected_payment_pubkey, transport_encryption_pubkey, updated_at)
-            VALUES ($1, $2, $3, NOW())
-            ON CONFLICT (user_id) DO UPDATE SET
+            INSERT INTO user_payment_keys (user_id, wallet_environment, protected_payment_pubkey, transport_encryption_pubkey, updated_at)
+            VALUES ($1, $2, $3, $4, NOW())
+            ON CONFLICT (user_id, wallet_environment) DO UPDATE SET
                 protected_payment_pubkey = EXCLUDED.protected_payment_pubkey,
                 transport_encryption_pubkey = EXCLUDED.transport_encryption_pubkey,
                 updated_at = NOW()
             "#,
         )
         .bind(user_id)
+        .bind(wallet_environment)
         .bind(protected_pubkey)
         .bind(transport_pubkey)
         .execute(&self.pool)
@@ -85,18 +89,20 @@ impl ProtectedMessageRepository for PgProtectedMessageRepository {
     async fn find_payment_profile_by_username(
         &self,
         username: &str,
+        wallet_environment: &str,
     ) -> Result<Option<UserPaymentProfileResponse>> {
         let clean_username = username.strip_prefix('@').unwrap_or(username);
 
         let row = sqlx::query(
             r#"
-            SELECT u.username, k.protected_payment_pubkey, k.transport_encryption_pubkey
+            SELECT u.username, k.wallet_environment, k.protected_payment_pubkey, k.transport_encryption_pubkey
             FROM users u
             JOIN user_payment_keys k ON u.id = k.user_id
-            WHERE LOWER(u.username) = LOWER($1)
+            WHERE LOWER(u.username) = LOWER($1) AND k.wallet_environment = $2
             "#,
         )
         .bind(clean_username)
+        .bind(wallet_environment)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to find payment profile: {e}")))?;
@@ -111,6 +117,7 @@ impl ProtectedMessageRepository for PgProtectedMessageRepository {
             UserPaymentProfileResponse {
                 username: uname,
                 handle,
+                wallet_environment: r.get("wallet_environment"),
                 protected_payment_pubkey: r.get("protected_payment_pubkey"),
                 transport_encryption_pubkey: r.get("transport_encryption_pubkey"),
             }
@@ -123,9 +130,10 @@ impl ProtectedMessageRepository for PgProtectedMessageRepository {
             INSERT INTO protected_messages (
                 id, payment_intent_id, sender_user_id, recipient_user_id,
                 sender_username, recipient_username, encrypted_payload, payload_version,
-                status, created_at, acknowledged_at
+                status, recipient_transport_key_fingerprint, recipient_p2pk_key_fingerprint,
+                wallet_environment, created_at, acknowledged_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             "#,
         )
         .bind(message.id)
@@ -137,6 +145,9 @@ impl ProtectedMessageRepository for PgProtectedMessageRepository {
         .bind(&message.encrypted_payload)
         .bind(message.payload_version)
         .bind(&message.status)
+        .bind(&message.recipient_transport_key_fingerprint)
+        .bind(&message.recipient_p2pk_key_fingerprint)
+        .bind(&message.wallet_environment)
         .bind(message.created_at)
         .bind(message.acknowledged_at)
         .execute(&self.pool)
@@ -229,10 +240,14 @@ impl ProtectedMessageRepository for PgProtectedMessageRepository {
 use crate::auth::repository::UserRepository;
 use std::sync::Arc;
 
+type UserEnvKey = (Uuid, String);
+type KeyPairPubkeys = (String, String);
+type PaymentKeyStore = Arc<RwLock<HashMap<UserEnvKey, KeyPairPubkeys>>>;
+
 /// In-memory implementation of ProtectedMessageRepository for testing
 #[derive(Default, Clone)]
 pub struct InMemoryProtectedMessageRepository {
-    keys: Arc<RwLock<HashMap<Uuid, (String, String)>>>,
+    keys: PaymentKeyStore,
     usernames: Arc<RwLock<HashMap<String, Uuid>>>,
     messages: Arc<RwLock<HashMap<Uuid, ProtectedMessageRow>>>,
     user_repo: Option<Arc<dyn UserRepository>>,
@@ -254,12 +269,13 @@ impl ProtectedMessageRepository for InMemoryProtectedMessageRepository {
     async fn upsert_user_payment_keys(
         &self,
         user_id: Uuid,
+        wallet_environment: &str,
         protected_pubkey: &str,
         transport_pubkey: &str,
     ) -> Result<()> {
         let mut k = self.keys.write().await;
         k.insert(
-            user_id,
+            (user_id, wallet_environment.to_string()),
             (protected_pubkey.to_string(), transport_pubkey.to_string()),
         );
         Ok(())
@@ -268,6 +284,7 @@ impl ProtectedMessageRepository for InMemoryProtectedMessageRepository {
     async fn find_payment_profile_by_username(
         &self,
         username: &str,
+        wallet_environment: &str,
     ) -> Result<Option<UserPaymentProfileResponse>> {
         let clean = username
             .strip_prefix('@')
@@ -291,13 +308,16 @@ impl ProtectedMessageRepository for InMemoryProtectedMessageRepository {
         };
 
         let k = self.keys.read().await;
-        let Some((protected_pubkey, transport_pubkey)) = k.get(&user_id) else {
+        let Some((protected_pubkey, transport_pubkey)) =
+            k.get(&(user_id, wallet_environment.to_string()))
+        else {
             return Ok(None);
         };
 
         Ok(Some(UserPaymentProfileResponse {
             username: clean.clone(),
             handle: format!("@{clean}"),
+            wallet_environment: wallet_environment.to_string(),
             protected_payment_pubkey: protected_pubkey.clone(),
             transport_encryption_pubkey: transport_pubkey.clone(),
         }))

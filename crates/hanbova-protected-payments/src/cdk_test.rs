@@ -22,6 +22,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore = "requires running local test mint"]
     async fn test_scenario_a_bob_claims_with_p2pk() {
         let mint_url = "http://127.0.0.1:3338";
 
@@ -127,7 +128,11 @@ mod tests {
             Wallet::new(mint_url, CurrencyUnit::Sat, bob_db, random_seed(), None).unwrap();
 
         let bob_bal_before = bob_wallet.total_balance().await.unwrap();
-        assert_eq!(bob_bal_before, Amount::ZERO, "Bob initial balance must be 0");
+        assert_eq!(
+            bob_bal_before,
+            Amount::ZERO,
+            "Bob initial balance must be 0"
+        );
 
         let bob_recv_opts = ReceiveOptions {
             p2pk_signing_keys: vec![bob_sec],
@@ -161,6 +166,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires running local test mint"]
     async fn test_scenario_b_alice_refunds_after_locktime() {
         let mint_url = "http://127.0.0.1:3338";
 

@@ -45,11 +45,7 @@ pub async fn get_payment_intent_by_reference(
     let user_id_str = auth_user.user_id.to_string();
     let response = state
         .payment_service
-        .get_payment_intent_by_reference(
-            &reference,
-            Some(&user_id_str),
-            Some(&auth_user.username),
-        )
+        .get_payment_intent_by_reference(&reference, Some(&user_id_str), Some(&auth_user.username))
         .await?;
     Ok(Json(response))
 }
@@ -75,12 +71,7 @@ pub async fn update_payment_intent_status(
     let actor_id_str = auth_user.user_id.to_string();
     let response = state
         .payment_service
-        .update_payment_status(
-            id,
-            payload.status,
-            &actor_id_str,
-            Some(&auth_user.username),
-        )
+        .update_payment_status(id, payload.status, &actor_id_str, Some(&auth_user.username))
         .await?;
     Ok(Json(response))
 }

@@ -310,7 +310,9 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/v1/payment-intents/by-reference/{claim_ref_1}"))
+                    .uri(format!(
+                        "/api/v1/payment-intents/by-reference/{claim_ref_1}"
+                    ))
                     .header("authorization", format!("Bearer {bob_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -329,7 +331,9 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/v1/payment-intents/by-reference/{claim_ref_2}"))
+                    .uri(format!(
+                        "/api/v1/payment-intents/by-reference/{claim_ref_2}"
+                    ))
                     .header("authorization", format!("Bearer {bob_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -362,7 +366,9 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/v1/payment-intents/by-reference/{claim_ref_1}"))
+                    .uri(format!(
+                        "/api/v1/payment-intents/by-reference/{claim_ref_1}"
+                    ))
                     .header("authorization", format!("Bearer {charlie_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -792,10 +798,11 @@ mod tests {
         let charlie_json: Value = serde_json::from_slice(&charlie_body).unwrap();
         let charlie_token = charlie_json["access_token"].as_str().unwrap();
 
-        // 4. Bob Publishes Public Payment Keys
+        // 4. Bob Publishes Public Payment Keys for mainnet_pilot
         let bob_keys_payload = serde_json::json!({
             "protected_payment_pubkey": "02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5af",
-            "transport_encryption_pubkey": "6d9b4b9b9c9f0b83e3c09f8e434f0e9d6d9b4b9b9c9f0b83e3c09f8e434f0e9d"
+            "transport_encryption_pubkey": "6d9b4b9b9c9f0b83e3c09f8e434f0e9d6d9b4b9b9c9f0b83e3c09f8e434f0e9d",
+            "wallet_environment": "mainnet_pilot"
         });
         let bob_keys_res = app
             .clone()
@@ -812,13 +819,27 @@ mod tests {
             .unwrap();
         assert_eq!(bob_keys_res.status(), StatusCode::OK);
 
-        // 5. Alice looks up Bob's Public Payment Profile
+        // 4b. Lookup cashu_test environment for Bob -> 404 (not published for testnet)
+        let lookup_test_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/users/bob/payment-profile?environment=cashu_test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lookup_test_res.status(), StatusCode::NOT_FOUND);
+
+        // 5. Alice looks up Bob's Public Payment Profile for mainnet_pilot
         let lookup_res = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/api/v1/users/bob/payment-profile")
+                    .uri("/api/v1/users/bob/payment-profile?environment=mainnet_pilot")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -829,6 +850,7 @@ mod tests {
         let lookup_json: Value = serde_json::from_slice(&lookup_body).unwrap();
         assert_eq!(lookup_json["username"], "bob");
         assert_eq!(lookup_json["handle"], "@bob");
+        assert_eq!(lookup_json["wallet_environment"], "mainnet_pilot");
         assert_eq!(
             lookup_json["protected_payment_pubkey"],
             "02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5af"
@@ -838,13 +860,16 @@ mod tests {
             "6d9b4b9b9c9f0b83e3c09f8e434f0e9d6d9b4b9b9c9f0b83e3c09f8e434f0e9d"
         );
 
-        // 6. Alice sends End-to-End Encrypted Envelope to Bob
+        // 6. Alice sends End-to-End Encrypted Envelope to Bob with Key Fingerprints
         let mock_ciphertext =
             "enc_v1:98fae83b109dc08a9c8b7e6f5d4c3b2a10:opaque_authenticated_ciphertext_payload";
         let message_payload = serde_json::json!({
             "recipient_username": "@bob",
             "encrypted_payload": mock_ciphertext,
-            "payload_version": 1
+            "payload_version": 1,
+            "recipient_transport_key_fingerprint": "6d9b4b9b9c9f0b83",
+            "recipient_p2pk_key_fingerprint": "02a1633cafcc01eb",
+            "wallet_environment": "mainnet_pilot"
         });
         let send_msg_res = app
             .clone()
@@ -866,6 +891,15 @@ mod tests {
         assert_eq!(send_msg_json["sender_username"], "alice");
         assert_eq!(send_msg_json["recipient_username"], "bob");
         assert_eq!(send_msg_json["encrypted_payload"], mock_ciphertext);
+        assert_eq!(
+            send_msg_json["recipient_transport_key_fingerprint"],
+            "6d9b4b9b9c9f0b83"
+        );
+        assert_eq!(
+            send_msg_json["recipient_p2pk_key_fingerprint"],
+            "02a1633cafcc01eb"
+        );
+        assert_eq!(send_msg_json["wallet_environment"], "mainnet_pilot");
         assert_eq!(send_msg_json["status"], "delivered");
 
         // 7. Bob checks his Inbox -> sees message
@@ -927,7 +961,9 @@ mod tests {
                     .uri(format!("/api/v1/protected-messages/{}/ack", message_id))
                     .header("authorization", format!("Bearer {}", charlie_token))
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&serde_json::json!({"status": "claimed"})).unwrap()))
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({"status": "claimed"})).unwrap(),
+                    ))
                     .unwrap(),
             )
             .await
@@ -943,7 +979,9 @@ mod tests {
                     .uri(format!("/api/v1/protected-messages/{}/ack", message_id))
                     .header("authorization", format!("Bearer {}", alice_token))
                     .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&serde_json::json!({"status": "claimed"})).unwrap()))
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({"status": "claimed"})).unwrap(),
+                    ))
                     .unwrap(),
             )
             .await

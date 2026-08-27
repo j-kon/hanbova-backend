@@ -14,7 +14,10 @@ use crate::{
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", post(create_payment_intent).get(list_payment_intents))
-        .route("/by-reference/:reference", get(get_payment_intent_by_reference))
+        .route(
+            "/by-reference/:reference",
+            get(get_payment_intent_by_reference),
+        )
         .route("/:id", get(get_payment_intent))
         .route(
             "/:id/status",

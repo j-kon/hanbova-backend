@@ -1,10 +1,11 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     routing::{get, post, put},
     Json, Router,
 };
 use chrono::Utc;
+use serde::Deserialize;
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -35,21 +36,30 @@ pub fn router() -> Router<AppState> {
         .route("/protected-messages/:id/ack", post(ack_message_handler))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PaymentProfileQuery {
+    pub environment: Option<String>,
+}
+
 /// Lookup a user's public payment profile (secp256k1 P2PK key + X25519 transport key).
 pub async fn get_payment_profile_handler(
     State(state): State<AppState>,
     Path(username): Path<String>,
+    Query(query): Query<PaymentProfileQuery>,
 ) -> Result<Json<UserPaymentProfileResponse>> {
+    let environment = query.environment.as_deref().unwrap_or("cashu_test");
+
     let profile = state
         .protected_message_repo
-        .find_payment_profile_by_username(&username)
+        .find_payment_profile_by_username(&username, environment)
         .await?;
 
     match profile {
         Some(p) => Ok(Json(p)),
         None => Err(ApiError::NotFound(format!(
-            "User '@{}' not found or has not published payment keys",
-            username.strip_prefix('@').unwrap_or(&username)
+            "User '@{}' has not published payment keys for environment '{}'",
+            username.strip_prefix('@').unwrap_or(&username),
+            environment
         ))),
     }
 }
@@ -79,10 +89,16 @@ pub async fn update_payment_keys_handler(
         ));
     }
 
+    let wallet_env = payload
+        .wallet_environment
+        .as_deref()
+        .unwrap_or("cashu_test");
+
     state
         .protected_message_repo
         .upsert_user_payment_keys(
             auth_user.user_id,
+            wallet_env,
             &payload.protected_payment_pubkey,
             &payload.transport_encryption_pubkey,
         )
@@ -93,6 +109,7 @@ pub async fn update_payment_keys_handler(
         Json(serde_json::json!({
             "message": "Payment keys updated successfully",
             "username": auth_user.username,
+            "wallet_environment": wallet_env,
         })),
     ))
 }
@@ -132,6 +149,9 @@ pub async fn create_protected_message_handler(
         encrypted_payload: payload.encrypted_payload,
         payload_version: payload.payload_version,
         status: "delivered".to_string(),
+        recipient_transport_key_fingerprint: payload.recipient_transport_key_fingerprint,
+        recipient_p2pk_key_fingerprint: payload.recipient_p2pk_key_fingerprint,
+        wallet_environment: payload.wallet_environment,
         created_at: Utc::now(),
         acknowledged_at: None,
     };
