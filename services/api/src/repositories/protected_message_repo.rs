@@ -98,7 +98,7 @@ impl ProtectedMessageRepository for PgProtectedMessageRepository {
             SELECT u.username, k.wallet_environment, k.protected_payment_pubkey, k.transport_encryption_pubkey
             FROM users u
             JOIN user_payment_keys k ON u.id = k.user_id
-            WHERE LOWER(u.username) = LOWER($1) AND k.wallet_environment = $2
+            WHERE (LOWER(u.username) = LOWER($1) OR LOWER(u.email) = LOWER($1)) AND k.wallet_environment = $2
             "#,
         )
         .bind(clean_username)
@@ -290,19 +290,19 @@ impl ProtectedMessageRepository for InMemoryProtectedMessageRepository {
             .strip_prefix('@')
             .unwrap_or(username)
             .to_lowercase();
-        let user_id = if let Some(ref ur) = self.user_repo {
+        let (user_id, canonical_username) = if let Some(ref ur) = self.user_repo {
             let u_opt = ur
                 .find_by_username_or_email(&clean)
                 .await
                 .map_err(|e| ApiError::Internal(e.to_string()))?;
             match u_opt {
-                Some(u) => u.id,
+                Some(u) => (u.id, u.username),
                 None => return Ok(None),
             }
         } else {
             let u = self.usernames.read().await;
             match u.get(&clean) {
-                Some(id) => *id,
+                Some(id) => (*id, clean.clone()),
                 None => return Ok(None),
             }
         };
@@ -314,9 +314,15 @@ impl ProtectedMessageRepository for InMemoryProtectedMessageRepository {
             return Ok(None);
         };
 
+        let handle = if canonical_username.starts_with('@') {
+            canonical_username.clone()
+        } else {
+            format!("@{canonical_username}")
+        };
+
         Ok(Some(UserPaymentProfileResponse {
-            username: clean.clone(),
-            handle: format!("@{clean}"),
+            username: canonical_username,
+            handle,
             wallet_environment: wallet_environment.to_string(),
             protected_payment_pubkey: protected_pubkey.clone(),
             transport_encryption_pubkey: transport_pubkey.clone(),
