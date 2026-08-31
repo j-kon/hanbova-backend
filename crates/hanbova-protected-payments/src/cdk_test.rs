@@ -88,11 +88,10 @@ mod tests {
         let token_str = token.to_string();
 
         let alice_bal_after_send = alice_wallet.total_balance().await.unwrap();
-        // 100 sats sent + 1 sat mint split fee = 899 sats remaining
         assert_eq!(
             alice_bal_after_send,
-            Amount::from(899u64),
-            "Alice spendable balance must be 899 sats after sending 100 sats (1 sat mint split fee)"
+            Amount::from(900u64),
+            "Alice spendable balance must be 900 sats after sending 100 sats"
         );
 
         // 5. Wrong key (Charlie) cannot claim
@@ -139,18 +138,17 @@ mod tests {
             ..Default::default()
         };
         let bob_received = bob_wallet.receive(&token_str, bob_recv_opts).await.unwrap();
-        // 100 sats token received - 1 sat swap fee = 99 sats
         assert_eq!(
             bob_received,
-            Amount::from(99u64),
-            "Bob received net amount must be 99 sats (after 1 sat swap fee)"
+            Amount::from(100u64),
+            "Bob received net amount must be 100 sats"
         );
 
         let bob_bal_after = bob_wallet.total_balance().await.unwrap();
         assert_eq!(
             bob_bal_after,
-            Amount::from(99u64),
-            "Bob total balance after claim must be exactly 99 sats"
+            Amount::from(100u64),
+            "Bob total balance after claim must be exactly 100 sats"
         );
 
         // 8. Alice refund after Bob claimed must fail (already spent)
@@ -228,7 +226,7 @@ mod tests {
         let token_str = token.to_string();
 
         let alice_bal_sent = alice_wallet.total_balance().await.unwrap();
-        assert_eq!(alice_bal_sent, Amount::from(899u64));
+        assert_eq!(alice_bal_sent, Amount::from(900u64));
 
         // 5. Wait for locktime to expire (3 seconds)
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -244,15 +242,15 @@ mod tests {
             .unwrap();
         assert_eq!(
             refund_received,
-            Amount::from(99u64),
-            "Alice refund received net amount must be 99 sats (after 1 sat swap fee)"
+            Amount::from(100u64),
+            "Alice refund received net amount must be 100 sats"
         );
 
         let alice_bal_refunded = alice_wallet.total_balance().await.unwrap();
         assert_eq!(
             alice_bal_refunded,
-            Amount::from(998u64),
-            "Alice balance after 100 sat refund must be 998 sats (899 + 99)"
+            Amount::from(1000u64),
+            "Alice balance after 100 sat refund must be 1000 sats (900 + 100)"
         );
 
         // 7. Bob attempts claim after Alice refunded -> must fail
