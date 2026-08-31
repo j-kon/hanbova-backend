@@ -21,6 +21,10 @@ fn random_seed() -> [u8; 64] {
 mod tests {
     use super::*;
 
+    // NOTE: Exact balance assertions in these integration tests (e.g. 1000 - 100 = 900 sats,
+    // Bob receives 100 sats, Alice refunds 1000 sats) correspond to the pinned local
+    // `cashubtc/nutshell:0.16.5` FakeWallet development configuration, which charges zero
+    // split/swap fees. They do not imply that all external/production Cashu mints have zero fees.
     #[tokio::test]
     #[ignore = "requires running local test mint"]
     async fn test_scenario_a_bob_claims_with_p2pk() {
