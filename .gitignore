@@ -49,3 +49,4 @@ coverage/
 
 # Isolated feature workspaces
 .worktrees/
+hanbova.db
