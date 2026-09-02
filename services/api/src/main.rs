@@ -9,6 +9,7 @@ mod error;
 mod handlers;
 mod middleware;
 mod models;
+pub mod providers;
 mod repositories;
 mod routes;
 mod services;
