@@ -91,7 +91,10 @@ pub struct PayoutTransaction {
 
 #[async_trait]
 pub trait PayoutProvider: Send + Sync {
-    async fn get_supported_corridors(&self, country: Option<&str>) -> ProviderResult<Vec<PayoutCorridor>>;
+    async fn get_supported_corridors(
+        &self,
+        country: Option<&str>,
+    ) -> ProviderResult<Vec<PayoutCorridor>>;
     async fn get_payout_quote(&self, req: &PayoutQuoteRequest) -> ProviderResult<PayoutQuote>;
     async fn create_payout(&self, req: &CreatePayoutRequest) -> ProviderResult<PayoutTransaction>;
     async fn get_payout_status(&self, payout_id: &str) -> ProviderResult<PayoutTransaction>;
@@ -259,9 +262,21 @@ pub struct BillTransaction {
 #[async_trait]
 pub trait DigitalServicesProvider: Send + Sync {
     async fn get_supported_services(&self, country: &str) -> ProviderResult<Vec<BillServiceType>>;
-    async fn get_billers(&self, country: &str, service: Option<&BillServiceType>) -> ProviderResult<Vec<Biller>>;
-    async fn get_products(&self, country: &str, biller_id: &str) -> ProviderResult<Vec<BillProduct>>;
-    async fn validate_customer(&self, biller_id: &str, account_ref: &str) -> ProviderResult<CustomerValidation>;
+    async fn get_billers(
+        &self,
+        country: &str,
+        service: Option<&BillServiceType>,
+    ) -> ProviderResult<Vec<Biller>>;
+    async fn get_products(
+        &self,
+        country: &str,
+        biller_id: &str,
+    ) -> ProviderResult<Vec<BillProduct>>;
+    async fn validate_customer(
+        &self,
+        biller_id: &str,
+        account_ref: &str,
+    ) -> ProviderResult<CustomerValidation>;
     async fn get_bill_quote(&self, req: &BillQuoteRequest) -> ProviderResult<BillQuote>;
     async fn pay_bill(&self, req: &CreateBillPaymentRequest) -> ProviderResult<BillTransaction>;
     async fn get_bill_status(&self, tx_id: &str) -> ProviderResult<BillTransaction>;
@@ -331,28 +346,37 @@ mod tests {
     #[tokio::test]
     async fn test_bitnob_payout_corridors_and_quotes() {
         let adapter = BitnobAdapter::new();
-        let corridors = adapter.get_supported_corridors(Some("KE")).await.expect("corridors");
+        let corridors = adapter
+            .get_supported_corridors(Some("KE"))
+            .await
+            .expect("corridors");
         assert!(!corridors.is_empty());
         assert_eq!(corridors[0].country, "KE");
 
         // Quote calculation
-        let quote = adapter.get_payout_quote(&PayoutQuoteRequest {
-            corridor_id: "ke_mpesa".to_string(),
-            amount_fiat: 1000.0,
-            recipient_account: "0712345678".to_string(),
-        }).await.expect("payout quote");
+        let quote = adapter
+            .get_payout_quote(&PayoutQuoteRequest {
+                corridor_id: "ke_mpesa".to_string(),
+                amount_fiat: 1000.0,
+                recipient_account: "0712345678".to_string(),
+            })
+            .await
+            .expect("payout quote");
 
         assert_eq!(quote.amount_fiat, 1000.0);
         assert!(quote.amount_sats > 0);
         assert_eq!(quote.recipient_account, "0712345678");
 
         // Execution
-        let tx = adapter.create_payout(&CreatePayoutRequest {
-            quote_id: quote.quote_id,
-            recipient_name: "John Doe".to_string(),
-            recipient_account: "0712345678".to_string(),
-            reference: Some("Dinner".to_string()),
-        }).await.expect("create payout");
+        let tx = adapter
+            .create_payout(&CreatePayoutRequest {
+                quote_id: quote.quote_id,
+                recipient_name: "John Doe".to_string(),
+                recipient_account: "0712345678".to_string(),
+                reference: Some("Dinner".to_string()),
+            })
+            .await
+            .expect("create payout");
 
         assert_eq!(tx.status, "completed");
         assert_eq!(tx.provider, "bitnob");
@@ -361,18 +385,27 @@ mod tests {
     #[tokio::test]
     async fn test_bitnob_card_eligibility_and_creation() {
         let adapter = BitnobAdapter::new();
-        let eligibility_ke = adapter.check_card_eligibility("KE").await.expect("eligibility");
+        let eligibility_ke = adapter
+            .check_card_eligibility("KE")
+            .await
+            .expect("eligibility");
         assert!(eligibility_ke.is_eligible);
 
-        let eligibility_unknown = adapter.check_card_eligibility("XX").await.expect("eligibility");
+        let eligibility_unknown = adapter
+            .check_card_eligibility("XX")
+            .await
+            .expect("eligibility");
         assert!(!eligibility_unknown.is_eligible);
         assert!(eligibility_unknown.reason.is_some());
 
-        let card = adapter.create_virtual_card(&CreateCardRequest {
-            card_type: "virtual_visa".to_string(),
-            label: "Travel Card".to_string(),
-            funding_amount_sats: 10000,
-        }).await.expect("create card");
+        let card = adapter
+            .create_virtual_card(&CreateCardRequest {
+                card_type: "virtual_visa".to_string(),
+                label: "Travel Card".to_string(),
+                funding_amount_sats: 10000,
+            })
+            .await
+            .expect("create card");
 
         assert_eq!(card.status, "active");
         assert_eq!(card.balance_sats, 10000);
@@ -382,38 +415,56 @@ mod tests {
     #[tokio::test]
     async fn test_dtone_bills_and_customer_validation() {
         let adapter = DtOneAdapter::new();
-        let services_ke = adapter.get_supported_services("KE").await.expect("services");
+        let services_ke = adapter
+            .get_supported_services("KE")
+            .await
+            .expect("services");
         assert!(services_ke.contains(&BillServiceType::Airtime));
         assert!(services_ke.contains(&BillServiceType::Electricity));
         assert!(services_ke.contains(&BillServiceType::Water));
 
         // Billers
-        let billers = adapter.get_billers("KE", Some(&BillServiceType::Electricity)).await.expect("billers");
+        let billers = adapter
+            .get_billers("KE", Some(&BillServiceType::Electricity))
+            .await
+            .expect("billers");
         assert!(!billers.is_empty());
         assert_eq!(billers[0].service_type, BillServiceType::Electricity);
 
         // Validation
-        let valid = adapter.validate_customer(&billers[0].id, "14123456789").await.expect("validate");
+        let valid = adapter
+            .validate_customer(&billers[0].id, "14123456789")
+            .await
+            .expect("validate");
         assert!(valid.is_valid);
 
-        let invalid = adapter.validate_customer(&billers[0].id, "12").await.expect("validate");
+        let invalid = adapter
+            .validate_customer(&billers[0].id, "12")
+            .await
+            .expect("validate");
         assert!(!invalid.is_valid);
 
         // Bill Quote & Pay
-        let quote = adapter.get_bill_quote(&BillQuoteRequest {
-            biller_id: billers[0].id.clone(),
-            product_id: None,
-            amount_fiat: 500.0,
-            customer_account: "14123456789".to_string(),
-        }).await.expect("quote");
+        let quote = adapter
+            .get_bill_quote(&BillQuoteRequest {
+                biller_id: billers[0].id.clone(),
+                product_id: None,
+                amount_fiat: 500.0,
+                customer_account: "14123456789".to_string(),
+            })
+            .await
+            .expect("quote");
 
         assert_eq!(quote.amount_fiat, 500.0);
         assert!(quote.amount_sats > 0);
 
-        let tx = adapter.pay_bill(&CreateBillPaymentRequest {
-            quote_id: quote.quote_id,
-            customer_account: "14123456789".to_string(),
-        }).await.expect("pay");
+        let tx = adapter
+            .pay_bill(&CreateBillPaymentRequest {
+                quote_id: quote.quote_id,
+                customer_account: "14123456789".to_string(),
+            })
+            .await
+            .expect("pay");
 
         assert_eq!(tx.status, "completed");
         assert!(tx.receipt_number.is_some());
@@ -426,15 +477,20 @@ mod tests {
         assert!(!packages.is_empty());
         assert_eq!(packages[0].country, "KE");
 
-        let profile = adapter.purchase_esim(&PurchaseEsimRequest {
-            package_id: packages[0].id.clone(),
-            user_email: Some("traveler@hanbova.africa".to_string()),
-        }).await.expect("purchase");
+        let profile = adapter
+            .purchase_esim(&PurchaseEsimRequest {
+                package_id: packages[0].id.clone(),
+                user_email: Some("traveler@hanbova.africa".to_string()),
+            })
+            .await
+            .expect("purchase");
 
         assert_eq!(profile.status, "active");
         assert!(profile.iccid.starts_with("89234"));
         assert!(profile.qr_code_data.starts_with("LPA:1$"));
         assert!(profile.ios_installation_url.contains("esimsetup.apple.com"));
-        assert!(profile.android_installation_url.contains("android.telephony.euicc"));
+        assert!(profile
+            .android_installation_url
+            .contains("android.telephony.euicc"));
     }
 }

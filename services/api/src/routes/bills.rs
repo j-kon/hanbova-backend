@@ -10,8 +10,8 @@ use serde_json::json;
 
 use crate::{
     providers::{
-        dtone::DtOneAdapter,
-        BillQuoteRequest, BillServiceType, CreateBillPaymentRequest, DigitalServicesProvider,
+        dtone::DtOneAdapter, BillQuoteRequest, BillServiceType, CreateBillPaymentRequest,
+        DigitalServicesProvider,
     },
     state::AppState,
 };
@@ -54,8 +54,14 @@ async fn get_services(Query(q): Query<CountryQuery>) -> impl IntoResponse {
     let country = q.country.unwrap_or_else(|| "KE".to_string());
     let adapter = DtOneAdapter::new();
     match adapter.get_supported_services(&country).await {
-        Ok(services) => (StatusCode::OK, Json(json!({ "country": country.to_uppercase(), "services": services }))),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))),
+        Ok(services) => (
+            StatusCode::OK,
+            Json(json!({ "country": country.to_uppercase(), "services": services })),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        ),
     }
 }
 
@@ -65,7 +71,10 @@ async fn get_billers(Query(q): Query<BillersQuery>) -> impl IntoResponse {
     let adapter = DtOneAdapter::new();
     match adapter.get_billers(&country, service_type.as_ref()).await {
         Ok(billers) => (StatusCode::OK, Json(json!({ "billers": billers }))),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        ),
     }
 }
 
@@ -74,15 +83,24 @@ async fn get_products(Query(q): Query<ProductsQuery>) -> impl IntoResponse {
     let adapter = DtOneAdapter::new();
     match adapter.get_products(&country, &q.biller_id).await {
         Ok(products) => (StatusCode::OK, Json(json!({ "products": products }))),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        ),
     }
 }
 
 async fn validate_customer(Json(req): Json<ValidateRequest>) -> impl IntoResponse {
     let adapter = DtOneAdapter::new();
-    match adapter.validate_customer(&req.biller_id, &req.account_reference).await {
+    match adapter
+        .validate_customer(&req.biller_id, &req.account_reference)
+        .await
+    {
         Ok(validation) => (StatusCode::OK, Json(json!(validation))),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        ),
     }
 }
 
@@ -90,7 +108,10 @@ async fn create_bill_quote(Json(req): Json<BillQuoteRequest>) -> impl IntoRespon
     let adapter = DtOneAdapter::new();
     match adapter.get_bill_quote(&req).await {
         Ok(quote) => (StatusCode::OK, Json(json!(quote))),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        ),
     }
 }
 
@@ -98,7 +119,10 @@ async fn pay_bill(Json(req): Json<CreateBillPaymentRequest>) -> impl IntoRespons
     let adapter = DtOneAdapter::new();
     match adapter.pay_bill(&req).await {
         Ok(tx) => (StatusCode::OK, Json(json!(tx))),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        ),
     }
 }
 
@@ -106,6 +130,9 @@ async fn get_bill_transaction(Path(id): Path<String>) -> impl IntoResponse {
     let adapter = DtOneAdapter::new();
     match adapter.get_bill_status(&id).await {
         Ok(tx) => (StatusCode::OK, Json(json!(tx))),
-        Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "error": e.to_string() }))),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": e.to_string() })),
+        ),
     }
 }

@@ -37,7 +37,10 @@ async fn get_packages(Query(q): Query<PackagesQuery>) -> impl IntoResponse {
     let adapter = DtOneAdapter::new();
     match adapter.get_esim_packages(&country).await {
         Ok(packages) => (StatusCode::OK, Json(json!({ "packages": packages }))),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        ),
     }
 }
 
@@ -45,7 +48,10 @@ async fn purchase_esim(Json(req): Json<PurchaseEsimRequest>) -> impl IntoRespons
     let adapter = DtOneAdapter::new();
     match adapter.purchase_esim(&req).await {
         Ok(profile) => (StatusCode::OK, Json(json!(profile))),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        ),
     }
 }
 
@@ -54,7 +60,10 @@ async fn list_profiles() -> impl IntoResponse {
     let profile = adapter.get_esim_status("esim_prof_sample").await;
     match profile {
         Ok(p) => (StatusCode::OK, Json(json!({ "profiles": vec![p] }))),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        ),
     }
 }
 
@@ -62,7 +71,10 @@ async fn get_profile(Path(id): Path<String>) -> impl IntoResponse {
     let adapter = DtOneAdapter::new();
     match adapter.get_esim_status(&id).await {
         Ok(profile) => (StatusCode::OK, Json(json!(profile))),
-        Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "error": e.to_string() }))),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": e.to_string() })),
+        ),
     }
 }
 
@@ -70,6 +82,9 @@ async fn topup_profile(Path(id): Path<String>, Json(req): Json<TopupRequest>) ->
     let adapter = DtOneAdapter::new();
     match adapter.top_up_esim(&id, &req.package_id).await {
         Ok(profile) => (StatusCode::OK, Json(json!(profile))),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e.to_string() }))),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        ),
     }
 }

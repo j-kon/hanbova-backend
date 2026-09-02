@@ -63,6 +63,8 @@ pub struct MarketInfo {
     pub flag_emoji: String,
     pub currency: String,
     pub dial_code: String,
+    pub environment: String,
+    pub source: String,
     pub capabilities: MarketCapabilities,
 }
 
@@ -78,7 +80,11 @@ pub struct UserCountryContext {
 }
 
 impl UserCountryContext {
-    pub fn new(identity: impl Into<String>, spend: impl Into<String>, currency: impl Into<String>) -> Self {
+    pub fn new(
+        identity: impl Into<String>,
+        spend: impl Into<String>,
+        currency: impl Into<String>,
+    ) -> Self {
         Self {
             identity_country: identity.into().trim().to_uppercase(),
             spend_country: spend.into().trim().to_uppercase(),

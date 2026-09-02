@@ -1,19 +1,14 @@
-use axum::{
-    extract::Path,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::get,
-    Json, Router,
-};
+use axum::{extract::Path, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use hanbova_core::market::{MarketCapabilities, MarketInfo};
 use serde_json::json;
 
 use crate::state::AppState;
 
 pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/markets", get(list_markets))
-        .route("/markets/:country/capabilities", get(get_market_capabilities))
+    Router::new().route("/markets", get(list_markets)).route(
+        "/markets/:country/capabilities",
+        get(get_market_capabilities),
+    )
 }
 
 async fn list_markets() -> impl IntoResponse {
@@ -24,6 +19,8 @@ async fn list_markets() -> impl IntoResponse {
             flag_emoji: "🇰🇪".to_string(),
             currency: "KES".to_string(),
             dial_code: "+254".to_string(),
+            environment: "sandbox".to_string(),
+            source: "mock".to_string(),
             capabilities: MarketCapabilities {
                 payouts: true,
                 mobile_money: true,
@@ -43,6 +40,8 @@ async fn list_markets() -> impl IntoResponse {
             flag_emoji: "🇳🇬".to_string(),
             currency: "NGN".to_string(),
             dial_code: "+234".to_string(),
+            environment: "sandbox".to_string(),
+            source: "mock".to_string(),
             capabilities: MarketCapabilities {
                 payouts: true,
                 mobile_money: false,
@@ -62,6 +61,8 @@ async fn list_markets() -> impl IntoResponse {
             flag_emoji: "🇬🇭".to_string(),
             currency: "GHS".to_string(),
             dial_code: "+233".to_string(),
+            environment: "sandbox".to_string(),
+            source: "mock".to_string(),
             capabilities: MarketCapabilities {
                 payouts: true,
                 mobile_money: true,
@@ -81,6 +82,8 @@ async fn list_markets() -> impl IntoResponse {
             flag_emoji: "🇿🇦".to_string(),
             currency: "ZAR".to_string(),
             dial_code: "+27".to_string(),
+            environment: "sandbox".to_string(),
+            source: "mock".to_string(),
             capabilities: MarketCapabilities {
                 payouts: true,
                 mobile_money: false,
@@ -100,6 +103,8 @@ async fn list_markets() -> impl IntoResponse {
             flag_emoji: "🇺🇬".to_string(),
             currency: "UGX".to_string(),
             dial_code: "+256".to_string(),
+            environment: "sandbox".to_string(),
+            source: "mock".to_string(),
             capabilities: MarketCapabilities {
                 payouts: true,
                 mobile_money: true,
@@ -119,6 +124,8 @@ async fn list_markets() -> impl IntoResponse {
             flag_emoji: "🇷🇼".to_string(),
             currency: "RWF".to_string(),
             dial_code: "+250".to_string(),
+            environment: "sandbox".to_string(),
+            source: "mock".to_string(),
             capabilities: MarketCapabilities {
                 payouts: true,
                 mobile_money: true,
@@ -147,6 +154,8 @@ async fn get_market_capabilities(Path(country): Path<String>) -> impl IntoRespon
                 "name": "Kenya",
                 "currency": "KES",
                 "flag_emoji": "🇰🇪",
+                "environment": "sandbox",
+                "source": "mock",
                 "capabilities": {
                     "payouts": true,
                     "mobile_money": true,
@@ -168,6 +177,8 @@ async fn get_market_capabilities(Path(country): Path<String>) -> impl IntoRespon
                 "name": "Nigeria",
                 "currency": "NGN",
                 "flag_emoji": "🇳🇬",
+                "environment": "sandbox",
+                "source": "mock",
                 "capabilities": {
                     "payouts": true,
                     "mobile_money": false,
@@ -189,6 +200,8 @@ async fn get_market_capabilities(Path(country): Path<String>) -> impl IntoRespon
                 "name": "Ghana",
                 "currency": "GHS",
                 "flag_emoji": "🇬🇭",
+                "environment": "sandbox",
+                "source": "mock",
                 "capabilities": {
                     "payouts": true,
                     "mobile_money": true,
@@ -210,6 +223,8 @@ async fn get_market_capabilities(Path(country): Path<String>) -> impl IntoRespon
                 "name": "South Africa",
                 "currency": "ZAR",
                 "flag_emoji": "🇿🇦",
+                "environment": "sandbox",
+                "source": "mock",
                 "capabilities": {
                     "payouts": true,
                     "mobile_money": false,
@@ -231,6 +246,8 @@ async fn get_market_capabilities(Path(country): Path<String>) -> impl IntoRespon
                 "name": "Uganda",
                 "currency": "UGX",
                 "flag_emoji": "🇺🇬",
+                "environment": "sandbox",
+                "source": "mock",
                 "capabilities": {
                     "payouts": true,
                     "mobile_money": true,
@@ -252,6 +269,8 @@ async fn get_market_capabilities(Path(country): Path<String>) -> impl IntoRespon
                 "name": "Rwanda",
                 "currency": "RWF",
                 "flag_emoji": "🇷🇼",
+                "environment": "sandbox",
+                "source": "mock",
                 "capabilities": {
                     "payouts": true,
                     "mobile_money": true,

@@ -10,9 +10,16 @@ pub struct BitnobAdapter {
 
 impl BitnobAdapter {
     pub fn new() -> Self {
-        let api_key = std::env::var("BITNOB_API_KEY").ok().filter(|s| !s.trim().is_empty());
-        let environment = std::env::var("BITNOB_ENVIRONMENT")
-            .unwrap_or_else(|_| if api_key.is_some() { "sandbox".to_string() } else { "mock".to_string() });
+        let api_key = std::env::var("BITNOB_API_KEY")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let environment = std::env::var("BITNOB_ENVIRONMENT").unwrap_or_else(|_| {
+            if api_key.is_some() {
+                "sandbox".to_string()
+            } else {
+                "mock".to_string()
+            }
+        });
 
         Self {
             api_key,
@@ -27,7 +34,10 @@ impl BitnobAdapter {
 
 #[async_trait]
 impl PayoutProvider for BitnobAdapter {
-    async fn get_supported_corridors(&self, country: Option<&str>) -> ProviderResult<Vec<PayoutCorridor>> {
+    async fn get_supported_corridors(
+        &self,
+        country: Option<&str>,
+    ) -> ProviderResult<Vec<PayoutCorridor>> {
         let all_corridors = vec![
             PayoutCorridor {
                 id: "ke_mpesa".to_string(),
@@ -103,9 +113,15 @@ impl PayoutProvider for BitnobAdapter {
 
         if let Some(c) = country {
             let country_upper = c.trim().to_uppercase();
-            let filtered: Vec<_> = all_corridors.into_iter().filter(|co| co.country == country_upper).collect();
+            let filtered: Vec<_> = all_corridors
+                .into_iter()
+                .filter(|co| co.country == country_upper)
+                .collect();
             if filtered.is_empty() {
-                return Err(ProviderError::UnsupportedCountry(format!("No payout corridors available for {}", country_upper)));
+                return Err(ProviderError::UnsupportedCountry(format!(
+                    "No payout corridors available for {}",
+                    country_upper
+                )));
             }
             Ok(filtered)
         } else {
@@ -118,12 +134,18 @@ impl PayoutProvider for BitnobAdapter {
         let corridor = corridors
             .into_iter()
             .find(|c| c.id == req.corridor_id)
-            .ok_or_else(|| ProviderError::ValidationFailed(format!("Unknown corridor {}", req.corridor_id)))?;
+            .ok_or_else(|| {
+                ProviderError::ValidationFailed(format!("Unknown corridor {}", req.corridor_id))
+            })?;
 
-        if req.amount_fiat < corridor.min_amount_fiat || req.amount_fiat > corridor.max_amount_fiat {
+        if req.amount_fiat < corridor.min_amount_fiat || req.amount_fiat > corridor.max_amount_fiat
+        {
             return Err(ProviderError::ValidationFailed(format!(
                 "Amount {} {} outside corridor limits (min: {}, max: {})",
-                req.amount_fiat, corridor.currency, corridor.min_amount_fiat, corridor.max_amount_fiat
+                req.amount_fiat,
+                corridor.currency,
+                corridor.min_amount_fiat,
+                corridor.max_amount_fiat
             )));
         }
 
@@ -154,7 +176,9 @@ impl PayoutProvider for BitnobAdapter {
 
     async fn create_payout(&self, req: &CreatePayoutRequest) -> ProviderResult<PayoutTransaction> {
         if req.recipient_account.trim().is_empty() {
-            return Err(ProviderError::ValidationFailed("Recipient account cannot be empty".to_string()));
+            return Err(ProviderError::ValidationFailed(
+                "Recipient account cannot be empty".to_string(),
+            ));
         }
 
         Ok(PayoutTransaction {
@@ -205,7 +229,11 @@ impl CardProvider for BitnobAdapter {
         Ok(CardEligibility {
             is_eligible: eligible,
             country: country_upper,
-            supported_types: if eligible { vec!["virtual_visa".to_string(), "virtual_mastercard".to_string()] } else { vec![] },
+            supported_types: if eligible {
+                vec!["virtual_visa".to_string(), "virtual_mastercard".to_string()]
+            } else {
+                vec![]
+            },
             min_funding_sats: 5000,
             reason,
         })
@@ -213,7 +241,9 @@ impl CardProvider for BitnobAdapter {
 
     async fn create_virtual_card(&self, req: &CreateCardRequest) -> ProviderResult<VirtualCard> {
         if req.funding_amount_sats < 5000 {
-            return Err(ProviderError::ValidationFailed("Minimum card funding is 5,000 sats".to_string()));
+            return Err(ProviderError::ValidationFailed(
+                "Minimum card funding is 5,000 sats".to_string(),
+            ));
         }
 
         let now = Utc::now();

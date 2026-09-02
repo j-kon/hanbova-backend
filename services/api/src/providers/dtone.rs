@@ -11,10 +11,19 @@ pub struct DtOneAdapter {
 
 impl DtOneAdapter {
     pub fn new() -> Self {
-        let api_key = std::env::var("DTONE_API_KEY").ok().filter(|s| !s.trim().is_empty());
-        let api_secret = std::env::var("DTONE_API_SECRET").ok().filter(|s| !s.trim().is_empty());
-        let environment = std::env::var("DTONE_ENVIRONMENT")
-            .unwrap_or_else(|_| if api_key.is_some() { "sandbox".to_string() } else { "mock".to_string() });
+        let api_key = std::env::var("DTONE_API_KEY")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let api_secret = std::env::var("DTONE_API_SECRET")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let environment = std::env::var("DTONE_ENVIRONMENT").unwrap_or_else(|_| {
+            if api_key.is_some() {
+                "sandbox".to_string()
+            } else {
+                "mock".to_string()
+            }
+        });
 
         Self {
             api_key,
@@ -24,7 +33,9 @@ impl DtOneAdapter {
     }
 
     pub fn is_configured(&self) -> bool {
-        (self.api_key.is_some() && self.api_secret.is_some()) || self.environment == "mock" || self.environment == "sandbox"
+        (self.api_key.is_some() && self.api_secret.is_some())
+            || self.environment == "mock"
+            || self.environment == "sandbox"
     }
 }
 
@@ -76,11 +87,18 @@ impl DigitalServicesProvider for DtOneAdapter {
                 BillServiceType::Water,
                 BillServiceType::Tv,
             ]),
-            _ => Err(ProviderError::UnsupportedCountry(format!("Digital bill services not available in {}", c))),
+            _ => Err(ProviderError::UnsupportedCountry(format!(
+                "Digital bill services not available in {}",
+                c
+            ))),
         }
     }
 
-    async fn get_billers(&self, country: &str, service: Option<&BillServiceType>) -> ProviderResult<Vec<Biller>> {
+    async fn get_billers(
+        &self,
+        country: &str,
+        service: Option<&BillServiceType>,
+    ) -> ProviderResult<Vec<Biller>> {
         let c = country.trim().to_uppercase();
         let mut billers = Vec::new();
 
@@ -361,17 +379,29 @@ impl DigitalServicesProvider for DtOneAdapter {
                     },
                 ]);
             }
-            _ => return Err(ProviderError::UnsupportedCountry(format!("No billers found for country {}", c))),
+            _ => {
+                return Err(ProviderError::UnsupportedCountry(format!(
+                    "No billers found for country {}",
+                    c
+                )))
+            }
         }
 
         if let Some(st) = service {
-            Ok(billers.into_iter().filter(|b| &b.service_type == st).collect())
+            Ok(billers
+                .into_iter()
+                .filter(|b| &b.service_type == st)
+                .collect())
         } else {
             Ok(billers)
         }
     }
 
-    async fn get_products(&self, _country: &str, biller_id: &str) -> ProviderResult<Vec<BillProduct>> {
+    async fn get_products(
+        &self,
+        _country: &str,
+        biller_id: &str,
+    ) -> ProviderResult<Vec<BillProduct>> {
         let b = biller_id.trim().to_lowercase();
         if b.contains("data") {
             Ok(vec![
@@ -408,25 +438,29 @@ impl DigitalServicesProvider for DtOneAdapter {
             ])
         } else {
             // Variable amount recharge for Airtime or Utilities
-            Ok(vec![
-                BillProduct {
-                    id: format!("{}_topup", b),
-                    biller_id: b,
-                    name: "Flexible Recharge".to_string(),
-                    description: Some("Enter any custom amount".to_string()),
-                    amount_fiat: 0.0,
-                    is_variable_amount: true,
-                    min_amount_fiat: Some(50.0),
-                    max_amount_fiat: Some(50000.0),
-                }
-            ])
+            Ok(vec![BillProduct {
+                id: format!("{}_topup", b),
+                biller_id: b,
+                name: "Flexible Recharge".to_string(),
+                description: Some("Enter any custom amount".to_string()),
+                amount_fiat: 0.0,
+                is_variable_amount: true,
+                min_amount_fiat: Some(50.0),
+                max_amount_fiat: Some(50000.0),
+            }])
         }
     }
 
-    async fn validate_customer(&self, biller_id: &str, account_ref: &str) -> ProviderResult<CustomerValidation> {
+    async fn validate_customer(
+        &self,
+        biller_id: &str,
+        account_ref: &str,
+    ) -> ProviderResult<CustomerValidation> {
         let ref_clean = account_ref.trim();
         if ref_clean.is_empty() {
-            return Err(ProviderError::ValidationFailed("Account reference cannot be empty".to_string()));
+            return Err(ProviderError::ValidationFailed(
+                "Account reference cannot be empty".to_string(),
+            ));
         }
 
         if ref_clean.len() < 5 {
@@ -452,7 +486,9 @@ impl DigitalServicesProvider for DtOneAdapter {
 
     async fn get_bill_quote(&self, req: &BillQuoteRequest) -> ProviderResult<BillQuote> {
         if req.amount_fiat <= 0.0 {
-            return Err(ProviderError::ValidationFailed("Amount must be greater than zero".to_string()));
+            return Err(ProviderError::ValidationFailed(
+                "Amount must be greater than zero".to_string(),
+            ));
         }
 
         // Calibrated FX reference rate
@@ -473,13 +509,22 @@ impl DigitalServicesProvider for DtOneAdapter {
         let sats_amount = ((req.amount_fiat / rate_per_btc) * 100_000_000.0).round() as u64;
         let service_type = if req.biller_id.contains("data") {
             BillServiceType::Data
-        } else if req.biller_id.contains("kplc") || req.biller_id.contains("electric") || req.biller_id.contains("ecg") || req.biller_id.contains("eskom") || req.biller_id.contains("umeme") || req.biller_id.contains("eucl") {
+        } else if req.biller_id.contains("kplc")
+            || req.biller_id.contains("electric")
+            || req.biller_id.contains("ecg")
+            || req.biller_id.contains("eskom")
+            || req.biller_id.contains("umeme")
+            || req.biller_id.contains("eucl")
+        {
             BillServiceType::Electricity
         } else if req.biller_id.contains("water") {
             BillServiceType::Water
         } else if req.biller_id.contains("dstv") || req.biller_id.contains("tv") {
             BillServiceType::Tv
-        } else if req.biller_id.contains("zuku") || req.biller_id.contains("spectranet") || req.biller_id.contains("internet") {
+        } else if req.biller_id.contains("zuku")
+            || req.biller_id.contains("spectranet")
+            || req.biller_id.contains("internet")
+        {
             BillServiceType::Internet
         } else {
             BillServiceType::Airtime
@@ -517,7 +562,10 @@ impl DigitalServicesProvider for DtOneAdapter {
             amount_fiat: 100.0,
             fee_sats: 50,
             status: "completed".to_string(),
-            receipt_number: Some(format!("REC-{}", Uuid::new_v4().to_string()[..8].to_uppercase())),
+            receipt_number: Some(format!(
+                "REC-{}",
+                Uuid::new_v4().to_string()[..8].to_uppercase()
+            )),
             token_code,
             provider: "dtone".to_string(),
             created_at: Utc::now(),
@@ -578,7 +626,11 @@ impl EsimProvider for DtOneAdapter {
             EsimPackage {
                 id: format!("esim_{}_1gb_7d", cr.to_lowercase()),
                 country: cr.clone(),
-                region: if cr == "GLOBAL" { "Global".to_string() } else { "Africa".to_string() },
+                region: if cr == "GLOBAL" {
+                    "Global".to_string()
+                } else {
+                    "Africa".to_string()
+                },
                 name: format!("{} 1 GB", name_prefix),
                 data_allowance_mb: 1024,
                 validity_days: 7,
@@ -592,7 +644,11 @@ impl EsimProvider for DtOneAdapter {
             EsimPackage {
                 id: format!("esim_{}_3gb_15d", cr.to_lowercase()),
                 country: cr.clone(),
-                region: if cr == "GLOBAL" { "Global".to_string() } else { "Africa".to_string() },
+                region: if cr == "GLOBAL" {
+                    "Global".to_string()
+                } else {
+                    "Africa".to_string()
+                },
                 name: format!("{} 3 GB", name_prefix),
                 data_allowance_mb: 3072,
                 validity_days: 15,
@@ -606,7 +662,11 @@ impl EsimProvider for DtOneAdapter {
             EsimPackage {
                 id: format!("esim_{}_10gb_30d", cr.to_lowercase()),
                 country: cr.clone(),
-                region: if cr == "GLOBAL" { "Global".to_string() } else { "Africa".to_string() },
+                region: if cr == "GLOBAL" {
+                    "Global".to_string()
+                } else {
+                    "Africa".to_string()
+                },
                 name: format!("{} 10 GB Super", name_prefix),
                 data_allowance_mb: 10240,
                 validity_days: 30,
@@ -624,7 +684,15 @@ impl EsimProvider for DtOneAdapter {
         let matching_id = format!("TEST-{}", Uuid::new_v4().to_string()[..8].to_uppercase());
         let smdp = "rsp.dtone.com".to_string();
         let activation_code = format!("LPA:1${}${}", smdp, matching_id);
-        let iccid = format!("892340210000{}", Uuid::new_v4().to_string().chars().filter(|c| c.is_ascii_digit()).take(8).collect::<String>());
+        let iccid = format!(
+            "892340210000{}",
+            Uuid::new_v4()
+                .to_string()
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .take(8)
+                .collect::<String>()
+        );
 
         let now = Utc::now();
         Ok(EsimProfile {
