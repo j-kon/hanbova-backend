@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use thiserror::Error;
 
 pub mod bitnob;
@@ -166,16 +167,20 @@ impl BillServiceType {
             BillServiceType::Internet => "internet",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for BillServiceType {
+    type Err = ProviderError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_lowercase().as_str() {
-            "airtime" => Some(BillServiceType::Airtime),
-            "data" => Some(BillServiceType::Data),
-            "electricity" => Some(BillServiceType::Electricity),
-            "water" => Some(BillServiceType::Water),
-            "tv" => Some(BillServiceType::Tv),
-            "internet" => Some(BillServiceType::Internet),
-            _ => None,
+            "airtime" => Ok(BillServiceType::Airtime),
+            "data" => Ok(BillServiceType::Data),
+            "electricity" => Ok(BillServiceType::Electricity),
+            "water" => Ok(BillServiceType::Water),
+            "tv" => Ok(BillServiceType::Tv),
+            "internet" => Ok(BillServiceType::Internet),
+            value => Err(ProviderError::UnsupportedService(value.to_string())),
         }
     }
 }
@@ -342,6 +347,21 @@ mod tests {
     use super::*;
     use bitnob::BitnobAdapter;
     use dtone::DtOneAdapter;
+
+    #[test]
+    fn provider_adapters_support_standard_default_construction() {
+        assert!(BitnobAdapter::default().is_configured());
+        assert!(DtOneAdapter::default().is_configured());
+    }
+
+    #[test]
+    fn bill_service_type_parses_normalized_route_values() {
+        assert!(matches!(
+            " Airtime ".parse::<BillServiceType>(),
+            Ok(BillServiceType::Airtime)
+        ));
+        assert!("unsupported".parse::<BillServiceType>().is_err());
+    }
 
     #[tokio::test]
     async fn test_bitnob_payout_corridors_and_quotes() {

@@ -39,6 +39,12 @@ impl DtOneAdapter {
     }
 }
 
+impl Default for DtOneAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl DigitalServicesProvider for DtOneAdapter {
     async fn get_supported_services(&self, country: &str) -> ProviderResult<Vec<BillServiceType>> {
