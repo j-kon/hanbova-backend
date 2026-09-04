@@ -8,7 +8,7 @@ test -s "$compose_file" || {
   exit 1
 }
 
-if grep -Eq 'CASHU_MINT_URL|JWT_SECRET=[^$}]|MINT_PRIVATE_KEY=[^$}]' "$compose_file"; then
+if grep -Eq 'CASHU_MINT_URL|JWT_SECRET:.*(hanbova|replace-with|change-me)|MINT_PRIVATE_KEY:.*(hanbova|replace-with|change-me)' "$compose_file"; then
   echo "compose file contains legacy or hardcoded secret configuration" >&2
   exit 1
 fi
