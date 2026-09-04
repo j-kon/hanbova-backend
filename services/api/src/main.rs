@@ -1,5 +1,4 @@
 use axum::Router;
-use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -20,7 +19,7 @@ use config::AppConfig;
 use state::AppState;
 
 pub fn build_app(state: AppState) -> Router {
-    let api_v1 = routes::create_api_router();
+    let api_v1 = routes::create_api_router(&state.config);
     let rate_limiter = middleware::RequestRateLimiter::new(
         middleware::MAX_REQUESTS_PER_MINUTE,
         std::time::Duration::from_secs(60),
@@ -57,41 +56,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.environment
     );
 
-    let pool = if let Some(db_url) = &config.database_url {
-        tracing::info!("Connecting to PostgreSQL database...");
-        match PgPoolOptions::new()
-            .max_connections(10)
-            .acquire_timeout(std::time::Duration::from_secs(5))
-            .connect(db_url)
-            .await
-        {
-            Ok(pool) => {
-                tracing::info!("PostgreSQL connected successfully.");
-                // Run migrations if database is available
-                if let Err(e) = sqlx::migrate!("./migrations").run(&pool).await {
-                    if config.is_production() {
-                        return Err(format!(
-                            "database migration failed during production startup: {e}"
-                        )
-                        .into());
-                    }
-                    tracing::warn!("Failed to automatically run SQL migrations: {:?}", e);
-                } else {
-                    tracing::info!("Database migrations applied cleanly.");
-                }
-                Some(pool)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "PostgreSQL connection failed ({}). Falling back to in-memory repositories.",
-                    e
-                );
-                None
-            }
+    let pool = match startup::connect_database(&config).await {
+        Ok(pool) => pool,
+        Err(error) if config.is_production() => return Err(error.into()),
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "PostgreSQL is unavailable in a non-production environment; using in-memory persistence"
+            );
+            None
         }
-    } else {
-        tracing::info!("No DATABASE_URL configured. Running with in-memory persistence.");
-        None
     };
 
     let state = AppState::try_new(config.clone(), pool)?;
@@ -125,6 +99,24 @@ mod tests {
         let config = AppConfig::from_iter([("HANBOVA_ENV", "development")]).unwrap();
         let state = AppState::new(config, None);
         build_app(state)
+    }
+
+    fn setup_production_test_app() -> Router {
+        let config = AppConfig::from_iter([
+            ("HANBOVA_ENV", "production"),
+            ("HANBOVA_API_HOST", "0.0.0.0"),
+            ("HANBOVA_API_PORT", "8080"),
+            ("DATABASE_URL", "postgres://hanbova:secret@db/hanbova"),
+            ("JWT_SECRET", "production-secret-that-is-at-least-32-bytes"),
+            ("MINT_URL", "https://mint.example.com"),
+            ("PROVIDER_MODE", "production"),
+            ("CORS_ALLOWED_ORIGINS", "https://app.example.com"),
+        ])
+        .unwrap();
+
+        // This test observes routing only; production startup itself rejects
+        // mock providers before an AppState can be constructed normally.
+        build_app(AppState::new(config, None))
     }
 
     #[tokio::test]
@@ -1061,6 +1053,24 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn production_does_not_register_lightning_routes() {
+        let app = setup_production_test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/lightning/invoice")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"amount_sats":1000}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
