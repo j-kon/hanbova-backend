@@ -20,7 +20,7 @@ for required in HANBOVA_ENV HANBOVA_API_HOST HANBOVA_API_PORT DATABASE_URL JWT_S
   }
 done
 
-grep -q 'HANBOVA_ENV=development' "$compose_file" || {
+grep -Eq 'HANBOVA_ENV[=:][[:space:]]*development' "$compose_file" || {
   echo "only the explicit development compose profile may use this validator" >&2
   exit 1
 }
