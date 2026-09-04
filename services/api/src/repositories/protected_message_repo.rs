@@ -12,6 +12,12 @@ use crate::{
 
 pub type Result<T> = std::result::Result<T, ApiError>;
 
+// Keep every PostgreSQL read aligned with `ProtectedMessageRow`.  Omitting one
+// of these columns makes sqlx fail at runtime when decoding the row, which is
+// particularly easy to miss because the in-memory repository does not use SQL
+// decoding.
+const PROTECTED_MESSAGE_COLUMNS: &str = "id, payment_intent_id, sender_user_id, recipient_user_id, sender_username, recipient_username, encrypted_payload, payload_version, status, recipient_transport_key_fingerprint, recipient_p2pk_key_fingerprint, wallet_environment, created_at, acknowledged_at";
+
 #[async_trait]
 pub trait ProtectedMessageRepository: Send + Sync {
     async fn upsert_user_payment_keys(
@@ -158,15 +164,9 @@ impl ProtectedMessageRepository for PgProtectedMessageRepository {
     }
 
     async fn find_message_by_id(&self, id: Uuid) -> Result<Option<ProtectedMessageRow>> {
-        let row = sqlx::query_as::<_, ProtectedMessageRow>(
-            r#"
-            SELECT id, payment_intent_id, sender_user_id, recipient_user_id,
-                   sender_username, recipient_username, encrypted_payload, payload_version,
-                   status, created_at, acknowledged_at
-            FROM protected_messages
-            WHERE id = $1
-            "#,
-        )
+        let row = sqlx::query_as::<_, ProtectedMessageRow>(&format!(
+            "SELECT {PROTECTED_MESSAGE_COLUMNS} FROM protected_messages WHERE id = $1"
+        ))
         .bind(id)
         .fetch_optional(&self.pool)
         .await
@@ -180,14 +180,9 @@ impl ProtectedMessageRepository for PgProtectedMessageRepository {
         recipient_user_id: Uuid,
     ) -> Result<Vec<ProtectedMessageRow>> {
         let rows = sqlx::query_as::<_, ProtectedMessageRow>(
-            r#"
-            SELECT id, payment_intent_id, sender_user_id, recipient_user_id,
-                   sender_username, recipient_username, encrypted_payload, payload_version,
-                   status, created_at, acknowledged_at
-            FROM protected_messages
-            WHERE recipient_user_id = $1
-            ORDER BY created_at DESC
-            "#,
+            &format!(
+                "SELECT {PROTECTED_MESSAGE_COLUMNS} FROM protected_messages WHERE recipient_user_id = $1 ORDER BY created_at DESC"
+            ),
         )
         .bind(recipient_user_id)
         .fetch_all(&self.pool)
@@ -202,14 +197,9 @@ impl ProtectedMessageRepository for PgProtectedMessageRepository {
         sender_user_id: Uuid,
     ) -> Result<Vec<ProtectedMessageRow>> {
         let rows = sqlx::query_as::<_, ProtectedMessageRow>(
-            r#"
-            SELECT id, payment_intent_id, sender_user_id, recipient_user_id,
-                   sender_username, recipient_username, encrypted_payload, payload_version,
-                   status, created_at, acknowledged_at
-            FROM protected_messages
-            WHERE sender_user_id = $1
-            ORDER BY created_at DESC
-            "#,
+            &format!(
+                "SELECT {PROTECTED_MESSAGE_COLUMNS} FROM protected_messages WHERE sender_user_id = $1 ORDER BY created_at DESC"
+            ),
         )
         .bind(sender_user_id)
         .fetch_all(&self.pool)
@@ -234,6 +224,38 @@ impl ProtectedMessageRepository for PgProtectedMessageRepository {
         .map_err(|e| ApiError::Internal(format!("Failed to update message status: {e}")))?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PROTECTED_MESSAGE_COLUMNS;
+
+    #[test]
+    fn protected_message_projection_covers_every_row_field() {
+        for column in [
+            "id",
+            "payment_intent_id",
+            "sender_user_id",
+            "recipient_user_id",
+            "sender_username",
+            "recipient_username",
+            "encrypted_payload",
+            "payload_version",
+            "status",
+            "recipient_transport_key_fingerprint",
+            "recipient_p2pk_key_fingerprint",
+            "wallet_environment",
+            "created_at",
+            "acknowledged_at",
+        ] {
+            assert!(
+                PROTECTED_MESSAGE_COLUMNS
+                    .split(", ")
+                    .any(|selected| selected == column),
+                "projection is missing {column}"
+            );
+        }
     }
 }
 
