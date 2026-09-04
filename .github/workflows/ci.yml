@@ -36,5 +36,14 @@ jobs:
       - name: Run Workspace Tests
         run: cargo test --workspace --all-targets
 
+      - name: Validate Development Compose Configuration
+        run: |
+          POSTGRES_PASSWORD=test-only \
+          JWT_SECRET=test-only-secret-at-least-32-bytes \
+          MINT_PRIVATE_KEY=test-only-mint-key \
+          CORS_ALLOWED_ORIGINS=http://localhost:3000 \
+          docker compose --profile development config > /tmp/hanbova-compose.yml
+          bash scripts/validate-compose-config.sh /tmp/hanbova-compose.yml
+
       - name: Build CDK C-FFI Shared Library
         run: cargo build --release -p hanbova-cdk-ffi
