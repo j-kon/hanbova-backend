@@ -1,40 +1,190 @@
-use std::env;
+use std::{collections::HashMap, fmt};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Environment {
+    Development,
+    Test,
+    Production,
+}
+
+impl fmt::Display for Environment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Development => "development",
+            Self::Test => "test",
+            Self::Production => "production",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderMode {
+    Mock,
+    Production,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("invalid configuration: {problems}")]
+pub struct ConfigError {
+    pub problems: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
-    pub env: String,
+    pub environment: Environment,
     pub host: String,
     pub port: u16,
     pub database_url: Option<String>,
     pub app_version: String,
     pub jwt_secret: String,
     pub mint_url: String,
+    pub provider_mode: ProviderMode,
+    pub cors_allowed_origins: Vec<String>,
 }
 
 impl AppConfig {
-    pub fn from_env() -> Self {
-        let env = env::var("HANBOVA_ENV").unwrap_or_else(|_| "development".to_string());
-        let host = env::var("HANBOVA_API_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-        let port = env::var("HANBOVA_API_PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(8080);
-        let database_url = env::var("DATABASE_URL").ok();
-        let app_version = env!("CARGO_PKG_VERSION").to_string();
-        let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| {
-            "hanbova_dev_jwt_secret_key_change_in_production_32bytes".to_string()
-        });
-        let mint_url = env::var("MINT_URL").unwrap_or_else(|_| "http://127.0.0.1:3338".to_string());
+    pub fn from_env() -> Result<Self, ConfigError> {
+        Self::from_iter(std::env::vars())
+    }
 
-        Self {
-            env,
+    pub fn from_iter<I, K, V>(vars: I) -> Result<Self, ConfigError>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let vars: HashMap<String, String> = vars
+            .into_iter()
+            .map(|(key, value)| (key.into(), value.into()))
+            .collect();
+        let mut problems = Vec::new();
+
+        let environment = match vars.get("HANBOVA_ENV").map(String::as_str) {
+            Some("development") => Environment::Development,
+            Some("test") => Environment::Test,
+            Some("production") => Environment::Production,
+            Some(value) => {
+                problems.push(format!(
+                    "HANBOVA_ENV must be development, test, or production (got {value})"
+                ));
+                Environment::Development
+            }
+            None => {
+                problems.push("HANBOVA_ENV must be set explicitly".to_string());
+                Environment::Development
+            }
+        };
+        let production = environment == Environment::Production;
+
+        let host = required_or_default(
+            &vars,
+            "HANBOVA_API_HOST",
+            "127.0.0.1",
+            production,
+            &mut problems,
+        );
+        let port_value =
+            required_or_default(&vars, "HANBOVA_API_PORT", "8080", production, &mut problems);
+        let port = port_value.parse::<u16>().unwrap_or_else(|_| {
+            problems.push("HANBOVA_API_PORT must be a valid TCP port".to_string());
+            8080
+        });
+
+        let database_url = vars
+            .get("DATABASE_URL")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        if production && database_url.is_none() {
+            problems.push("DATABASE_URL is required in production".to_string());
+        }
+
+        let jwt_secret = required_or_default(
+            &vars,
+            "JWT_SECRET",
+            "hanbova-development-only-jwt-secret-change-me",
+            production,
+            &mut problems,
+        );
+        if production && jwt_secret.len() < 32 {
+            problems.push("JWT_SECRET must be at least 32 bytes in production".to_string());
+        }
+        if production && jwt_secret.contains("development") {
+            problems.push("JWT_SECRET must not use the development default".to_string());
+        }
+
+        let mint_url = required_or_default(
+            &vars,
+            "MINT_URL",
+            "http://127.0.0.1:3338",
+            production,
+            &mut problems,
+        );
+        if production && !mint_url.starts_with("https://") {
+            problems.push("MINT_URL must use HTTPS in production".to_string());
+        }
+
+        let provider_mode = match vars.get("PROVIDER_MODE").map(String::as_str) {
+            Some("mock") => ProviderMode::Mock,
+            Some("production") => ProviderMode::Production,
+            Some(value) => {
+                problems.push(format!(
+                    "PROVIDER_MODE must be mock or production (got {value})"
+                ));
+                ProviderMode::Mock
+            }
+            None if production => {
+                problems.push("PROVIDER_MODE is required in production".to_string());
+                ProviderMode::Mock
+            }
+            None => ProviderMode::Mock,
+        };
+        if production && provider_mode == ProviderMode::Mock {
+            problems.push("mock providers are forbidden in production".to_string());
+        }
+
+        let cors_allowed_origins = vars
+            .get("CORS_ALLOWED_ORIGINS")
+            .map(|origins| {
+                origins
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|origin| !origin.is_empty())
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if production && cors_allowed_origins.is_empty() {
+            problems.push("CORS_ALLOWED_ORIGINS is required in production".to_string());
+        }
+        if production && cors_allowed_origins.iter().any(|origin| origin == "*") {
+            problems
+                .push("CORS_ALLOWED_ORIGINS must not contain a wildcard in production".to_string());
+        }
+        if production
+            && cors_allowed_origins
+                .iter()
+                .any(|origin| !origin.starts_with("https://"))
+        {
+            problems.push("CORS_ALLOWED_ORIGINS must use HTTPS in production".to_string());
+        }
+
+        if !problems.is_empty() {
+            return Err(ConfigError {
+                problems: problems.join("; "),
+            });
+        }
+
+        Ok(Self {
+            environment,
             host,
             port,
             database_url,
-            app_version,
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
             jwt_secret,
             mint_url,
-        }
+            provider_mode,
+            cors_allowed_origins,
+        })
     }
 
     pub fn socket_addr(&self) -> String {
@@ -42,6 +192,108 @@ impl AppConfig {
     }
 
     pub fn is_development(&self) -> bool {
-        self.env == "development"
+        self.environment == Environment::Development
+    }
+
+    pub fn is_production(&self) -> bool {
+        self.environment == Environment::Production
+    }
+}
+
+fn required_or_default(
+    vars: &HashMap<String, String>,
+    name: &str,
+    default: &str,
+    required: bool,
+    problems: &mut Vec<String>,
+) -> String {
+    match vars
+        .get(name)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => value.to_string(),
+        None if required => {
+            problems.push(format!("{name} is required in production"));
+            default.to_string()
+        }
+        None => default.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_production_vars() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("HANBOVA_ENV", "production"),
+            ("HANBOVA_API_HOST", "0.0.0.0"),
+            ("HANBOVA_API_PORT", "8080"),
+            ("DATABASE_URL", "postgres://hanbova:secret@db/hanbova"),
+            ("JWT_SECRET", "production-secret-that-is-at-least-32-bytes"),
+            ("MINT_URL", "https://mint.example.com"),
+            ("PROVIDER_MODE", "production"),
+            ("CORS_ALLOWED_ORIGINS", "https://app.example.com"),
+        ]
+    }
+
+    #[test]
+    fn production_configuration_is_accepted_when_complete() {
+        let config = AppConfig::from_iter(valid_production_vars()).unwrap();
+        assert!(config.is_production());
+        assert_eq!(config.provider_mode, ProviderMode::Production);
+    }
+
+    #[test]
+    fn production_rejects_missing_database_and_short_secret() {
+        let vars = [
+            ("HANBOVA_ENV", "production"),
+            ("HANBOVA_API_HOST", "0.0.0.0"),
+            ("HANBOVA_API_PORT", "8080"),
+            ("JWT_SECRET", "short"),
+            ("MINT_URL", "https://mint.example.com"),
+            ("PROVIDER_MODE", "production"),
+        ];
+        let error = AppConfig::from_iter(vars).unwrap_err();
+        assert!(error.to_string().contains("DATABASE_URL"));
+        assert!(error.to_string().contains("JWT_SECRET"));
+    }
+
+    #[test]
+    fn production_rejects_http_mint_and_mock_provider() {
+        let mut vars = valid_production_vars();
+        vars.retain(|(name, _)| *name != "MINT_URL" && *name != "PROVIDER_MODE");
+        vars.extend([
+            ("MINT_URL", "http://mint.example.com"),
+            ("PROVIDER_MODE", "mock"),
+        ]);
+        let error = AppConfig::from_iter(vars).unwrap_err();
+        assert!(error.to_string().contains("HTTPS"));
+        assert!(error.to_string().contains("mock"));
+    }
+
+    #[test]
+    fn production_rejects_wildcard_cors_origin() {
+        let mut vars = valid_production_vars();
+        vars.retain(|(name, _)| *name != "CORS_ALLOWED_ORIGINS");
+        vars.push(("CORS_ALLOWED_ORIGINS", "*"));
+
+        let error = AppConfig::from_iter(vars).unwrap_err();
+        assert!(error.to_string().contains("wildcard"));
+    }
+
+    #[test]
+    fn environment_must_be_explicit_and_supported() {
+        assert!(AppConfig::from_iter(Vec::<(&str, &str)>::new()).is_err());
+        assert!(AppConfig::from_iter([("HANBOVA_ENV", "staging")]).is_err());
+    }
+
+    #[test]
+    fn explicit_development_uses_safe_local_defaults() {
+        let config = AppConfig::from_iter([("HANBOVA_ENV", "development")]).unwrap();
+        assert!(config.is_development());
+        assert_eq!(config.provider_mode, ProviderMode::Mock);
+        assert_eq!(config.host, "127.0.0.1");
     }
 }

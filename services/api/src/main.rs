@@ -13,6 +13,7 @@ pub mod providers;
 mod repositories;
 mod routes;
 mod services;
+mod startup;
 mod state;
 
 use config::AppConfig;
@@ -20,10 +21,18 @@ use state::AppState;
 
 pub fn build_app(state: AppState) -> Router {
     let api_v1 = routes::create_api_router();
+    let rate_limiter = middleware::RequestRateLimiter::new(
+        middleware::MAX_REQUESTS_PER_MINUTE,
+        std::time::Duration::from_secs(60),
+    );
 
     Router::new()
         .nest("/api/v1", api_v1)
-        .layer(middleware::cors_layer())
+        .layer(axum::middleware::from_fn_with_state(
+            rate_limiter,
+            middleware::enforce_rate_limit,
+        ))
+        .layer(middleware::cors_layer(&state.config))
         .layer(middleware::request_limit_layer())
         .layer(middleware::trace_layer())
         .with_state(state)
@@ -41,11 +50,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let config = AppConfig::from_env();
+    let config = AppConfig::from_env()?;
     tracing::info!(
         "Starting Hanbova API v{} in [{}] mode",
         config.app_version,
-        config.env
+        config.environment
     );
 
     let pool = if let Some(db_url) = &config.database_url {
@@ -60,6 +69,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tracing::info!("PostgreSQL connected successfully.");
                 // Run migrations if database is available
                 if let Err(e) = sqlx::migrate!("./migrations").run(&pool).await {
+                    if config.is_production() {
+                        return Err(format!(
+                            "database migration failed during production startup: {e}"
+                        )
+                        .into());
+                    }
                     tracing::warn!("Failed to automatically run SQL migrations: {:?}", e);
                 } else {
                     tracing::info!("Database migrations applied cleanly.");
@@ -79,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    let state = AppState::new(config.clone(), pool);
+    let state = AppState::try_new(config.clone(), pool)?;
     let app = build_app(state);
 
     let addr_str = config.socket_addr();
@@ -107,15 +122,7 @@ mod tests {
     use tower::ServiceExt;
 
     fn setup_test_app() -> Router {
-        let config = AppConfig {
-            env: "development".to_string(),
-            host: "127.0.0.1".to_string(),
-            port: 8080,
-            database_url: None,
-            app_version: "0.1.0".to_string(),
-            jwt_secret: "test_jwt_secret_for_automated_testing_purposes".to_string(),
-            mint_url: "http://127.0.0.1:3338".to_string(),
-        };
+        let config = AppConfig::from_iter([("HANBOVA_ENV", "development")]).unwrap();
         let state = AppState::new(config, None);
         build_app(state)
     }
@@ -1010,8 +1017,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lightning_provider_errors_are_sanitized() {
+        let app = setup_test_app();
+        let token = crate::auth::jwt::generate_access_token(
+            uuid::Uuid::new_v4(),
+            "lightning-test-user",
+            "hanbova-development-only-jwt-secret-change-me",
+            15,
+        )
+        .unwrap();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/lightning/pay")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"bolt11":"not-a-lightning-invoice"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "Unable to pay Lightning invoice");
+    }
+
+    #[tokio::test]
+    async fn lightning_routes_require_an_access_token() {
+        let app = setup_test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/lightning/invoice")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"amount_sats":1000}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn test_lightning_invoice_and_pay() {
         let app = setup_test_app();
+        let token = crate::auth::jwt::generate_access_token(
+            uuid::Uuid::new_v4(),
+            "lightning-test-user",
+            "hanbova-development-only-jwt-secret-change-me",
+            15,
+        )
+        .unwrap();
 
         // 1. Create Invoice
         let invoice_payload = serde_json::json!({
@@ -1026,6 +1087,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/lightning/invoice")
+                    .header("authorization", format!("Bearer {token}"))
                     .header("content-type", "application/json")
                     .body(Body::from(serde_json::to_vec(&invoice_payload).unwrap()))
                     .unwrap(),
@@ -1050,6 +1112,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/v1/lightning/pay")
+                    .header("authorization", format!("Bearer {token}"))
                     .header("content-type", "application/json")
                     .body(Body::from(serde_json::to_vec(&pay_payload).unwrap()))
                     .unwrap(),

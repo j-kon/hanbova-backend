@@ -7,7 +7,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::state::AppState;
+use crate::{auth::handlers::AuthUser, state::AppState};
 use hanbova_core::SatoshiAmount;
 use hanbova_lightning::{CreateInvoiceRequest, PayInvoiceRequest};
 
@@ -44,15 +44,16 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn create_invoice(
+    _auth: AuthUser,
     State(state): State<AppState>,
     Json(payload): Json<CreateInvoiceDto>,
 ) -> impl IntoResponse {
     let amount = match SatoshiAmount::new(payload.amount_sats) {
         Ok(a) => a,
-        Err(e) => {
+        Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": e.to_string() })),
+                Json(serde_json::json!({ "error": "Invalid Lightning amount" })),
             )
                 .into_response()
         }
@@ -72,15 +73,16 @@ async fn create_invoice(
             Json(serde_json::to_value(invoice).unwrap()),
         )
             .into_response(),
-        Err(e) => (
+        Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e.to_string() })),
+            Json(serde_json::json!({ "error": "Unable to create Lightning invoice" })),
         )
             .into_response(),
     }
 }
 
 async fn pay_invoice(
+    _auth: AuthUser,
     State(state): State<AppState>,
     Json(payload): Json<PayInvoiceDto>,
 ) -> impl IntoResponse {
@@ -93,15 +95,16 @@ async fn pay_invoice(
         Ok(payment) => {
             (StatusCode::OK, Json(serde_json::to_value(payment).unwrap())).into_response()
         }
-        Err(e) => (
+        Err(_) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": e.to_string() })),
+            Json(serde_json::json!({ "error": "Unable to pay Lightning invoice" })),
         )
             .into_response(),
     }
 }
 
 async fn create_mint_quote(
+    _auth: AuthUser,
     State(state): State<AppState>,
     Json(payload): Json<MintQuoteDto>,
 ) -> impl IntoResponse {
@@ -111,37 +114,39 @@ async fn create_mint_quote(
         .await
     {
         Ok(quote) => (StatusCode::OK, Json(serde_json::to_value(quote).unwrap())).into_response(),
-        Err(e) => (
+        Err(_) => (
             StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": e.to_string() })),
+            Json(serde_json::json!({ "error": "Unable to create mint quote" })),
         )
             .into_response(),
     }
 }
 
 async fn check_mint_quote(
+    _auth: AuthUser,
     State(state): State<AppState>,
     Path(quote_id): Path<String>,
 ) -> impl IntoResponse {
     match state.cashu_bridge.check_mint_quote(&quote_id).await {
         Ok(quote) => (StatusCode::OK, Json(serde_json::to_value(quote).unwrap())).into_response(),
-        Err(e) => (
+        Err(_) => (
             StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": e.to_string() })),
+            Json(serde_json::json!({ "error": "Unable to retrieve mint quote" })),
         )
             .into_response(),
     }
 }
 
 async fn create_melt_quote(
+    _auth: AuthUser,
     State(state): State<AppState>,
     Json(payload): Json<MeltQuoteDto>,
 ) -> impl IntoResponse {
     match state.cashu_bridge.create_melt_quote(&payload.bolt11).await {
         Ok(quote) => (StatusCode::OK, Json(serde_json::to_value(quote).unwrap())).into_response(),
-        Err(e) => (
+        Err(_) => (
             StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": e.to_string() })),
+            Json(serde_json::json!({ "error": "Unable to create melt quote" })),
         )
             .into_response(),
     }

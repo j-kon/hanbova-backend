@@ -38,7 +38,7 @@ pub async fn health_check(State(state): State<AppState>) -> (StatusCode, Json<He
         status_code,
         Json(HealthResponse {
             status: "ok".to_string(),
-            environment: state.config.env.clone(),
+            environment: state.config.environment.to_string(),
             timestamp: Utc::now(),
             database: db_status,
         }),
@@ -49,6 +49,6 @@ pub async fn version_info(State(state): State<AppState>) -> Json<VersionResponse
     Json(VersionResponse {
         name: "hanbova-api".to_string(),
         version: state.config.app_version.clone(),
-        environment: state.config.env.clone(),
+        environment: state.config.environment.to_string(),
     })
 }
