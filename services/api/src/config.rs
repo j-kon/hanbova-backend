@@ -47,6 +47,7 @@ impl AppConfig {
         Self::from_iter(std::env::vars())
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_iter<I, K, V>(vars: I) -> Result<Self, ConfigError>
     where
         I: IntoIterator<Item = (K, V)>,
@@ -156,6 +157,24 @@ impl AppConfig {
         if production && cors_allowed_origins.is_empty() {
             problems.push("CORS_ALLOWED_ORIGINS is required in production".to_string());
         }
+        for origin in &cors_allowed_origins {
+            if origin == "*" && !production {
+                continue;
+            }
+            let valid = origin.parse::<axum::http::Uri>().ok().is_some_and(|uri| {
+                matches!(uri.scheme_str(), Some("http" | "https"))
+                    && uri.host().is_some_and(|host| !host.is_empty())
+                    && uri
+                        .authority()
+                        .is_some_and(|authority| !authority.as_str().contains('@'))
+                    && uri.path_and_query().is_none_or(|path| path.as_str() == "/")
+                    && !origin.ends_with('/')
+                    && axum::http::HeaderValue::from_str(origin).is_ok()
+            });
+            if !valid {
+                problems.push("CORS_ALLOWED_ORIGINS must contain valid HTTP origins without paths, credentials or queries".to_string());
+            }
+        }
         if production && cors_allowed_origins.iter().any(|origin| origin == "*") {
             problems
                 .push("CORS_ALLOWED_ORIGINS must not contain a wildcard in production".to_string());
@@ -243,6 +262,21 @@ mod tests {
         let config = AppConfig::from_iter(valid_production_vars()).unwrap();
         assert!(config.is_production());
         assert_eq!(config.provider_mode, ProviderMode::Production);
+    }
+
+    #[test]
+    fn rejects_malformed_cors_origins_before_router_construction() {
+        for origin in [
+            "https://app.example.com\ninvalid",
+            "https://",
+            "https://app.example.com/path",
+            "https://app.example.com?query=1",
+        ] {
+            let mut vars = valid_production_vars();
+            vars.retain(|(key, _)| *key != "CORS_ALLOWED_ORIGINS");
+            vars.push(("CORS_ALLOWED_ORIGINS", origin));
+            assert!(AppConfig::from_iter(vars).is_err(), "accepted {origin:?}");
+        }
     }
 
     #[test]

@@ -1,10 +1,12 @@
 use std::{
+    collections::HashMap,
+    net::{IpAddr, SocketAddr},
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use axum::{
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{HeaderValue, Method, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -22,7 +24,7 @@ pub const MAX_REQUESTS_PER_MINUTE: usize = 120;
 
 #[derive(Clone)]
 pub struct RequestRateLimiter {
-    state: Arc<Mutex<RequestWindow>>,
+    state: Arc<Mutex<HashMap<Option<IpAddr>, RequestWindow>>>,
     limit: usize,
     window: Duration,
 }
@@ -35,19 +37,28 @@ struct RequestWindow {
 impl RequestRateLimiter {
     pub fn new(limit: usize, window: Duration) -> Self {
         Self {
-            state: Arc::new(Mutex::new(RequestWindow {
-                started_at: Instant::now(),
-                requests: 0,
-            })),
+            state: Arc::new(Mutex::new(HashMap::new())),
             limit,
             window,
         }
     }
 
-    pub async fn allow_request(&self) -> bool {
-        let mut state = self.state.lock().await;
-        if state.started_at.elapsed() >= self.window {
-            state.started_at = Instant::now();
+    pub async fn allow_request(&self, peer: Option<IpAddr>) -> bool {
+        const MAX_TRACKED_PEERS: usize = 10_000;
+        let mut peers = self.state.lock().await;
+        let now = Instant::now();
+        if !peers.contains_key(&peer) {
+            peers.retain(|_, window| now.duration_since(window.started_at) < self.window);
+            if peers.len() >= MAX_TRACKED_PEERS {
+                return false;
+            }
+        }
+        let state = peers.entry(peer).or_insert(RequestWindow {
+            started_at: now,
+            requests: 0,
+        });
+        if now.duration_since(state.started_at) >= self.window {
+            state.started_at = now;
             state.requests = 0;
         }
         if state.requests >= self.limit {
@@ -63,7 +74,14 @@ pub async fn enforce_rate_limit(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    if !limiter.allow_request().await {
+    // Use the socket peer supplied by Axum, never client-controlled forwarding
+    // headers. Requests behind a proxy share its limit until trusted proxy
+    // handling is explicitly configured.
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.ip());
+    if !limiter.allow_request(peer).await {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             [("retry-after", "60")],
@@ -166,7 +184,39 @@ mod tests {
     #[tokio::test]
     async fn request_rate_limiter_rejects_requests_over_its_window_limit() {
         let limiter = super::RequestRateLimiter::new(1, std::time::Duration::from_secs(60));
-        assert!(limiter.allow_request().await);
-        assert!(!limiter.allow_request().await);
+        assert!(limiter.allow_request(None).await);
+        assert!(!limiter.allow_request(None).await);
+    }
+
+    #[tokio::test]
+    async fn rate_limit_isolated_by_peer_not_spoofed_forwarded_header() {
+        use axum::extract::ConnectInfo;
+        use std::net::SocketAddr;
+        let limiter = super::RequestRateLimiter::new(1, std::time::Duration::from_secs(60));
+        let app = Router::new()
+            .route("/", get(|| async { StatusCode::OK }))
+            .layer(axum::middleware::from_fn_with_state(
+                limiter,
+                super::enforce_rate_limit,
+            ));
+        for (ip, expected) in [
+            ("127.0.0.1:1000", StatusCode::OK),
+            ("127.0.0.1:1001", StatusCode::TOO_MANY_REQUESTS),
+            ("127.0.0.2:1000", StatusCode::OK),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/")
+                        .extension(ConnectInfo(ip.parse::<SocketAddr>().unwrap()))
+                        .header("x-forwarded-for", "untrusted-client")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
     }
 }

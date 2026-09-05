@@ -6,6 +6,9 @@ use thiserror::Error;
 
 pub mod bitnob;
 pub mod dtone;
+pub mod rates;
+
+pub use rates::{BitnobRateProvider, MockRateProvider, PlatformRateProvider};
 
 #[derive(Debug, Error, Clone, Serialize, Deserialize)]
 pub enum ProviderError {

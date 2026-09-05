@@ -11,6 +11,7 @@ pub mod markets;
 pub mod payment_intents;
 pub mod payouts;
 pub mod protected_messages;
+pub mod rates;
 
 pub fn create_api_router(config: &AppConfig) -> Router<AppState> {
     let router = Router::new()
@@ -21,6 +22,7 @@ pub fn create_api_router(config: &AppConfig) -> Router<AppState> {
         .merge(bills::router())
         .merge(esim::router())
         .merge(payouts::router())
+        .merge(rates::router())
         .nest("/payment-intents", payment_intents::router());
 
     if config.is_production() {

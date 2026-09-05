@@ -10,6 +10,17 @@ jobs:
   test:
     name: Rust Check, Lint & Test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hanbova
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: hanbova_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U hanbova -d hanbova_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -36,9 +47,26 @@ jobs:
       - name: Run Workspace Tests
         run: cargo test --workspace --all-targets
 
+      - name: Verify PostgreSQL repository and migrations
+        env:
+          DATABASE_URL: postgres://hanbova:test-only@localhost:5432/hanbova_test
+        run: cargo test -p hanbova-api postgres_ -- --ignored
+
+      - name: Start disposable FakeWallet mint
+        run: docker compose -p hanbova-mint-test -f docker-compose.mint-test.yml up --detach --wait --wait-timeout 90
+
+      - name: Verify mint claim and refund compatibility
+        env:
+          HANBOVA_TEST_MINT_PORT: "3339"
+        run: cargo test -p hanbova-protected-payments cdk_test::tests::test_scenario -- --ignored
+
+      - name: Remove disposable mint fixtures
+        if: always()
+        run: docker compose -p hanbova-mint-test -f docker-compose.mint-test.yml down
+
       - name: Validate Development Compose Configuration
         run: |
-          POSTGRES_PASSWORD=test-only \
+          POSTGRES_USER=hanbova POSTGRES_DB=hanbova_test POSTGRES_PASSWORD=test-only \
           JWT_SECRET=test-only-secret-at-least-32-bytes \
           MINT_PRIVATE_KEY=test-only-mint-key \
           CORS_ALLOWED_ORIGINS=http://localhost:3000 \

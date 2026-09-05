@@ -21,21 +21,152 @@ fn random_seed() -> [u8; 64] {
 mod tests {
     use super::*;
 
+    // Only the local port is configurable: these tests mint valueless fixtures
+    // and must never be pointed at an external or production mint.
+    fn local_mint_url() -> String {
+        let port = std::env::var("HANBOVA_TEST_MINT_PORT")
+            .map(|value| value.parse::<u16>().expect("test mint port must be a u16"))
+            .unwrap_or(3338);
+        assert_ne!(port, 0, "test mint port must be nonzero");
+        format!("http://127.0.0.1:{port}")
+    }
+
+    async fn verify_after_locktime_settlement(race: bool) {
+        let directory = tempfile::tempdir().unwrap();
+        let mint_url = local_mint_url();
+        let alice = Wallet::new(
+            &mint_url,
+            CurrencyUnit::Sat,
+            Arc::new(WalletRedbDatabase::new(&directory.path().join("alice.redb")).unwrap()),
+            random_seed(),
+            None,
+        )
+        .unwrap();
+        let bob = Wallet::new(
+            &mint_url,
+            CurrencyUnit::Sat,
+            Arc::new(WalletRedbDatabase::new(&directory.path().join("bob.redb")).unwrap()),
+            random_seed(),
+            None,
+        )
+        .unwrap();
+        let quote = alice
+            .mint_quote(
+                PaymentMethod::from_str("bolt11").unwrap(),
+                Some(Amount::from(1000u64)),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        alice
+            .mint(&quote.id, SplitTarget::default(), None)
+            .await
+            .unwrap();
+
+        let claim_key = SecretKey::generate();
+        let refund_key = SecretKey::generate();
+        let locktime = unix_time() + 2;
+        let conditions = Conditions::new(
+            Some(locktime),
+            None,
+            Some(vec![refund_key.public_key()]),
+            None,
+            Some(SigFlag::SigInputs),
+            None,
+        )
+        .unwrap();
+        let prepared = alice
+            .prepare_send(
+                Amount::from(100u64),
+                SendOptions {
+                    conditions: Some(SpendingConditions::new_p2pk(
+                        claim_key.public_key(),
+                        Some(conditions),
+                    )),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let token = prepared.confirm(None).await.unwrap().to_string();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while unix_time() <= locktime {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let claim_options = ReceiveOptions {
+            p2pk_signing_keys: vec![claim_key],
+            ..Default::default()
+        };
+        let refund_options = ReceiveOptions {
+            p2pk_signing_keys: vec![refund_key],
+            ..Default::default()
+        };
+        let (claim, refund) = if race {
+            tokio::join!(
+                bob.receive(&token, claim_options),
+                alice.receive(&token, refund_options)
+            )
+        } else {
+            let claim = bob.receive(&token, claim_options).await;
+            let refund = alice.receive(&token, refund_options).await;
+            (claim, refund)
+        };
+        if !race {
+            assert!(
+                claim.is_ok(),
+                "recipient claim path must remain valid after locktime: {:?}",
+                claim.as_ref().err()
+            );
+        }
+        assert_ne!(
+            claim.is_ok(),
+            refund.is_ok(),
+            "exactly one mint spend must succeed"
+        );
+        let bob_won = claim.is_ok();
+        assert_eq!(claim.or(refund).unwrap(), Amount::from(100u64));
+        assert_eq!(
+            bob.total_balance().await.unwrap(),
+            Amount::from(if bob_won { 100u64 } else { 0u64 })
+        );
+        assert_eq!(
+            alice.total_balance().await.unwrap(),
+            Amount::from(if bob_won { 900u64 } else { 1000u64 })
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running local test mint"]
+    async fn test_scenario_c_recipient_can_claim_after_locktime() {
+        verify_after_locktime_settlement(false).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires running local test mint"]
+    async fn test_scenario_d_concurrent_claim_and_refund_have_one_mint_winner() {
+        verify_after_locktime_settlement(true).await;
+    }
+
     // NOTE: Exact balance assertions in these integration tests (e.g. 1000 - 100 = 900 sats,
-    // Bob receives 100 sats, Alice refunds 1000 sats) correspond to the pinned local
-    // `cashubtc/nutshell:0.16.5` FakeWallet development configuration, which charges zero
-    // split/swap fees. They do not imply that all external/production Cashu mints have zero fees.
+    // Bob receives 100 sats, Alice refunds 1000 sats) require a local FakeWallet
+    // configuration with zero split/swap fees, as in docker-compose.mint-test.yml.
+    // They do not imply that external/production Cashu mints have zero fees.
     #[tokio::test]
     #[ignore = "requires running local test mint"]
     async fn test_scenario_a_bob_claims_with_p2pk() {
-        let mint_url = "http://127.0.0.1:3338";
+        let mint_url = local_mint_url();
 
         // 1. Create Alice Wallet
         let alice_dir =
             std::env::temp_dir().join(format!("hanbova_alice_{}", uuid::Uuid::new_v4()));
         let alice_db = Arc::new(WalletRedbDatabase::new(&alice_dir).unwrap());
         let alice_wallet =
-            Wallet::new(mint_url, CurrencyUnit::Sat, alice_db, random_seed(), None).unwrap();
+            Wallet::new(&mint_url, CurrencyUnit::Sat, alice_db, random_seed(), None).unwrap();
 
         // 2. Fund Alice with 1000 sats via controlled local test backend
         let quote = alice_wallet
@@ -103,8 +234,14 @@ mod tests {
         let charlie_dir =
             std::env::temp_dir().join(format!("hanbova_charlie_{}", uuid::Uuid::new_v4()));
         let charlie_db = Arc::new(WalletRedbDatabase::new(&charlie_dir).unwrap());
-        let charlie_wallet =
-            Wallet::new(mint_url, CurrencyUnit::Sat, charlie_db, random_seed(), None).unwrap();
+        let charlie_wallet = Wallet::new(
+            &mint_url,
+            CurrencyUnit::Sat,
+            charlie_db,
+            random_seed(),
+            None,
+        )
+        .unwrap();
 
         let charlie_recv_opts = ReceiveOptions {
             p2pk_signing_keys: vec![charlie_sec],
@@ -128,7 +265,7 @@ mod tests {
         let bob_dir = std::env::temp_dir().join(format!("hanbova_bob_{}", uuid::Uuid::new_v4()));
         let bob_db = Arc::new(WalletRedbDatabase::new(&bob_dir).unwrap());
         let bob_wallet =
-            Wallet::new(mint_url, CurrencyUnit::Sat, bob_db, random_seed(), None).unwrap();
+            Wallet::new(&mint_url, CurrencyUnit::Sat, bob_db, random_seed(), None).unwrap();
 
         let bob_bal_before = bob_wallet.total_balance().await.unwrap();
         assert_eq!(
@@ -170,14 +307,14 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires running local test mint"]
     async fn test_scenario_b_alice_refunds_after_locktime() {
-        let mint_url = "http://127.0.0.1:3338";
+        let mint_url = local_mint_url();
 
         // 1. Create Alice Wallet
         let alice_dir =
             std::env::temp_dir().join(format!("hanbova_alice_{}", uuid::Uuid::new_v4()));
         let alice_db = Arc::new(WalletRedbDatabase::new(&alice_dir).unwrap());
         let alice_wallet =
-            Wallet::new(mint_url, CurrencyUnit::Sat, alice_db, random_seed(), None).unwrap();
+            Wallet::new(&mint_url, CurrencyUnit::Sat, alice_db, random_seed(), None).unwrap();
 
         // 2. Fund Alice with 1000 sats via controlled local test backend
         let quote = alice_wallet
@@ -261,7 +398,7 @@ mod tests {
         let bob_dir = std::env::temp_dir().join(format!("hanbova_bob_{}", uuid::Uuid::new_v4()));
         let bob_db = Arc::new(WalletRedbDatabase::new(&bob_dir).unwrap());
         let bob_wallet =
-            Wallet::new(mint_url, CurrencyUnit::Sat, bob_db, random_seed(), None).unwrap();
+            Wallet::new(&mint_url, CurrencyUnit::Sat, bob_db, random_seed(), None).unwrap();
 
         let bob_recv_opts = ReceiveOptions {
             p2pk_signing_keys: vec![bob_sec],

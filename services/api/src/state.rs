@@ -33,6 +33,7 @@ pub struct AppState {
     pub protected_message_repo: Arc<dyn ProtectedMessageRepository>,
     pub lightning_provider: Arc<dyn LightningProvider>,
     pub cashu_bridge: Arc<CashuLightningBridge>,
+    pub rate_service: Arc<crate::services::HanbovaRateService>,
 }
 
 impl AppState {
@@ -82,6 +83,10 @@ impl AppState {
             Arc::new(MockLightningProvider::new(100_000));
         let cashu_bridge = Arc::new(CashuLightningBridge::new(&config.mint_url));
 
+        let rate_provider: Arc<dyn crate::providers::PlatformRateProvider> =
+            Arc::new(crate::providers::BitnobRateProvider::new());
+        let rate_service = Arc::new(crate::services::HanbovaRateService::new(rate_provider));
+
         Self {
             config,
             db_pool: pool,
@@ -90,6 +95,7 @@ impl AppState {
             protected_message_repo,
             lightning_provider,
             cashu_bridge,
+            rate_service,
         }
     }
 }

@@ -19,6 +19,9 @@ services:
       retries: 5
 
   cashu-mint:
+    # Legacy existing-data pin: do not upgrade without a backup/migration plan.
+    # Post-locktime recipient claims fail on this version. Use the isolated
+    # docker-compose.mint-test.yml fixture for current protocol validation.
     image: cashubtc/nutshell:0.16.5
     container_name: hanbova-cashu-mint
     restart: unless-stopped

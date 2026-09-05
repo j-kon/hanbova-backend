@@ -18,6 +18,20 @@ pub type Result<T> = std::result::Result<T, ApiError>;
 // decoding.
 const PROTECTED_MESSAGE_COLUMNS: &str = "id, payment_intent_id, sender_user_id, recipient_user_id, sender_username, recipient_username, encrypted_payload, payload_version, status, recipient_transport_key_fingerprint, recipient_p2pk_key_fingerprint, wallet_environment, created_at, acknowledged_at";
 
+// These are delivery/coordination reports, not independent proof of settlement.
+// Retries are idempotent; terminal reports must never overwrite one another.
+fn allowed_message_sources(target: &str) -> Result<&'static [&'static str]> {
+    match target {
+        "delivered" => Ok(&["delivered"]),
+        "acknowledged" => Ok(&["delivered", "acknowledged"]),
+        "claimed" => Ok(&["delivered", "acknowledged", "claimed"]),
+        "refunded" => Ok(&["delivered", "acknowledged", "refunded"]),
+        _ => Err(ApiError::BadRequest(
+            "Unknown protected message status".into(),
+        )),
+    }
+}
+
 #[async_trait]
 pub trait ProtectedMessageRepository: Send + Sync {
     async fn upsert_user_payment_keys(
@@ -210,18 +224,32 @@ impl ProtectedMessageRepository for PgProtectedMessageRepository {
     }
 
     async fn update_message_status(&self, id: Uuid, status: &str) -> Result<()> {
-        sqlx::query(
+        let allowed = allowed_message_sources(status)?;
+        let result = sqlx::query(
             r#"
             UPDATE protected_messages
             SET status = $1, acknowledged_at = CASE WHEN acknowledged_at IS NULL THEN NOW() ELSE acknowledged_at END
-            WHERE id = $2
+            WHERE id = $2 AND status = ANY($3)
             "#,
         )
         .bind(status)
         .bind(id)
+        .bind(allowed)
         .execute(&self.pool)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to update message status: {e}")))?;
+
+        if result.rows_affected() == 0 {
+            if self.find_message_by_id(id).await?.is_none() {
+                return Err(ApiError::NotFound(format!(
+                    "Protected message {id} not found"
+                )));
+            }
+            return Err(ApiError::Conflict(
+                "Protected message status cannot move backwards or replace a terminal report"
+                    .into(),
+            ));
+        }
 
         Ok(())
     }
@@ -229,7 +257,161 @@ impl ProtectedMessageRepository for PgProtectedMessageRepository {
 
 #[cfg(test)]
 mod tests {
-    use super::PROTECTED_MESSAGE_COLUMNS;
+    use super::*;
+
+    async fn check_message_status_race(
+        repo: &dyn ProtectedMessageRepository,
+        sender: Uuid,
+        recipient: Uuid,
+    ) {
+        let row = ProtectedMessageRow {
+            id: Uuid::new_v4(),
+            payment_intent_id: None,
+            sender_user_id: sender,
+            recipient_user_id: recipient,
+            sender_username: "alice".into(),
+            recipient_username: "bob".into(),
+            encrypted_payload: "opaque-test-ciphertext".into(),
+            payload_version: 1,
+            status: "delivered".into(),
+            recipient_transport_key_fingerprint: None,
+            recipient_p2pk_key_fingerprint: None,
+            wallet_environment: None,
+            created_at: Utc::now(),
+            acknowledged_at: None,
+        };
+        repo.save_message(&row).await.unwrap();
+        repo.update_message_status(row.id, "acknowledged")
+            .await
+            .unwrap();
+        let acknowledged = repo
+            .find_message_by_id(row.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .acknowledged_at;
+        assert!(repo
+            .update_message_status(row.id, "delivered")
+            .await
+            .is_err());
+        let (claim, refund) = tokio::join!(
+            repo.update_message_status(row.id, "claimed"),
+            repo.update_message_status(row.id, "refunded")
+        );
+        assert_ne!(
+            claim.is_ok(),
+            refund.is_ok(),
+            "only one terminal report can win"
+        );
+        let winner = repo.find_message_by_id(row.id).await.unwrap().unwrap();
+        for status in ["delivered", "acknowledged", "unknown"] {
+            assert!(repo.update_message_status(row.id, status).await.is_err());
+        }
+        repo.update_message_status(row.id, &winner.status)
+            .await
+            .unwrap();
+        let retried = repo.find_message_by_id(row.id).await.unwrap().unwrap();
+        assert_eq!(retried.status, winner.status);
+        assert_eq!(retried.acknowledged_at, acknowledged);
+        assert!(repo
+            .update_message_status(Uuid::new_v4(), "claimed")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn memory_message_status_is_monotonic() {
+        check_message_status_race(
+            &InMemoryProtectedMessageRepository::new(None),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        )
+        .await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "requires an isolated PostgreSQL test server; run explicitly in CI"]
+    async fn postgres_message_status_is_monotonic(pool: PgPool) {
+        let sender = Uuid::new_v4();
+        let recipient = Uuid::new_v4();
+        for (id, username) in [(sender, "alice"), (recipient, "bob")] {
+            sqlx::query("INSERT INTO users (id, username, email) VALUES ($1, $2, $3)")
+                .bind(id)
+                .bind(username)
+                .bind(format!("{username}@example.test"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        check_message_status_race(&PgProtectedMessageRepository::new(pool), sender, recipient)
+            .await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "requires an isolated PostgreSQL test server; run explicitly in CI"]
+    async fn postgres_message_metadata_round_trips(pool: sqlx::PgPool) {
+        use super::{PgProtectedMessageRepository, ProtectedMessageRepository};
+        use crate::models::ProtectedMessageRow;
+        use chrono::Utc;
+        use uuid::Uuid;
+        let sender = Uuid::new_v4();
+        let recipient = Uuid::new_v4();
+        for (id, username) in [(sender, "alice"), (recipient, "bob")] {
+            sqlx::query("INSERT INTO users (id, username, email) VALUES ($1, $2, $3)")
+                .bind(id)
+                .bind(username)
+                .bind(format!("{username}@example.test"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let repo = PgProtectedMessageRepository::new(pool);
+        for populated in [false, true] {
+            let row = ProtectedMessageRow {
+                id: Uuid::new_v4(),
+                payment_intent_id: None,
+                sender_user_id: sender,
+                recipient_user_id: recipient,
+                sender_username: "alice".into(),
+                recipient_username: "bob".into(),
+                encrypted_payload: "opaque-encrypted-test-envelope".into(),
+                payload_version: 1,
+                status: "delivered".into(),
+                recipient_transport_key_fingerprint: populated
+                    .then(|| "transport-fingerprint".into()),
+                recipient_p2pk_key_fingerprint: populated.then(|| "payment-fingerprint".into()),
+                wallet_environment: populated.then(|| "wallet_local".into()),
+                created_at: Utc::now(),
+                acknowledged_at: None,
+            };
+            repo.save_message(&row).await.unwrap();
+            let by_id = repo.find_message_by_id(row.id).await.unwrap().unwrap();
+            let inbox = repo.find_inbox_by_user_id(recipient).await.unwrap();
+            let outbox = repo.find_outbox_by_user_id(sender).await.unwrap();
+            for read in [
+                &by_id,
+                inbox.iter().find(|item| item.id == row.id).unwrap(),
+                outbox.iter().find(|item| item.id == row.id).unwrap(),
+            ] {
+                assert_eq!(read.encrypted_payload, row.encrypted_payload);
+                assert_eq!(read.wallet_environment, row.wallet_environment);
+                assert_eq!(
+                    read.recipient_transport_key_fingerprint,
+                    row.recipient_transport_key_fingerprint
+                );
+                assert_eq!(
+                    read.recipient_p2pk_key_fingerprint,
+                    row.recipient_p2pk_key_fingerprint
+                );
+            }
+            assert!(repo.find_inbox_by_user_id(sender).await.unwrap().is_empty());
+            assert!(repo
+                .find_outbox_by_user_id(recipient)
+                .await
+                .unwrap()
+                .is_empty());
+        }
+    }
 
     #[test]
     fn protected_message_projection_covers_every_row_field() {
@@ -391,12 +573,20 @@ impl ProtectedMessageRepository for InMemoryProtectedMessageRepository {
     }
 
     async fn update_message_status(&self, id: Uuid, status: &str) -> Result<()> {
+        let allowed = allowed_message_sources(status)?;
         let mut m = self.messages.write().await;
-        if let Some(msg) = m.get_mut(&id) {
-            msg.status = status.to_string();
-            if msg.acknowledged_at.is_none() {
-                msg.acknowledged_at = Some(Utc::now());
-            }
+        let msg = m
+            .get_mut(&id)
+            .ok_or_else(|| ApiError::NotFound(format!("Protected message {id} not found")))?;
+        if !allowed.contains(&msg.status.as_str()) {
+            return Err(ApiError::Conflict(
+                "Protected message status cannot move backwards or replace a terminal report"
+                    .into(),
+            ));
+        }
+        msg.status = status.to_string();
+        if msg.acknowledged_at.is_none() {
+            msg.acknowledged_at = Some(Utc::now());
         }
         Ok(())
     }

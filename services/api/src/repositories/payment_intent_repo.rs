@@ -17,7 +17,72 @@ pub trait PaymentIntentRepository: Send + Sync {
     async fn find_by_reference(&self, reference: &str) -> Result<Option<PaymentIntent>>;
     async fn list_all(&self) -> Result<Vec<PaymentIntent>>;
     async fn find_by_user(&self, user_identifier: &str) -> Result<Vec<PaymentIntent>>;
-    async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<()>;
+    /// Validate and persist a transition atomically, returning its stored timestamp.
+    async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<DateTime<Utc>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hanbova_core::PaymentType;
+
+    async fn check_payment_status_race(repo: &dyn PaymentIntentRepository) {
+        let mut intent = PaymentIntent::new(
+            PaymentType::Protected,
+            SatoshiAmount::new(100).unwrap(),
+            "bob",
+            Some("alice".into()),
+            None,
+            None,
+        )
+        .unwrap();
+        intent.status = PaymentStatus::RefundAvailable;
+        repo.save(&intent).await.unwrap();
+        let (claim, refund) = tokio::join!(
+            repo.update_status(intent.id, PaymentStatus::Claimed),
+            repo.update_status(intent.id, PaymentStatus::Refunded),
+        );
+        assert_ne!(
+            claim.is_ok(),
+            refund.is_ok(),
+            "exactly one terminal report must succeed"
+        );
+        let winner = repo.find_by_id(intent.id).await.unwrap().unwrap();
+        assert_eq!(
+            claim.or(refund).unwrap(),
+            winner.updated_at,
+            "response timestamp must match the stored value"
+        );
+        assert!(repo
+            .update_status(intent.id, PaymentStatus::Claimable)
+            .await
+            .is_err());
+        repo.update_status(intent.id, winner.status).await.unwrap();
+        let retried = repo.find_by_id(intent.id).await.unwrap().unwrap();
+        assert_eq!(retried.status, winner.status);
+        assert_eq!(retried.updated_at, winner.updated_at);
+        assert!(repo
+            .update_status(Uuid::new_v4(), PaymentStatus::Claimed)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn memory_payment_status_preserves_terminal_winner() {
+        check_payment_status_race(&InMemoryPaymentIntentRepository::new()).await;
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "requires an isolated PostgreSQL test server; run explicitly in CI"]
+    async fn postgres_payment_status_preserves_terminal_winner(pool: PgPool) {
+        // Exercise database precision loss even on hosts whose wall clock
+        // already has microsecond precision. This changes only the isolated fixture.
+        sqlx::query("ALTER TABLE payment_intents ALTER COLUMN updated_at TYPE TIMESTAMPTZ(3)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        check_payment_status_race(&PgPaymentIntentRepository::new(pool)).await;
+    }
 }
 
 /// PostgreSQL implementation of PaymentIntentRepository.
@@ -259,23 +324,41 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
         Ok(results)
     }
 
-    async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<()> {
+    async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<DateTime<Utc>> {
+        let mut transaction = self.pool.begin().await?;
+        let row =
+            sqlx::query("SELECT status, updated_at FROM payment_intents WHERE id = $1 FOR UPDATE")
+                .bind(id)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .ok_or_else(|| ApiError::NotFound(format!("Payment intent {id} not found")))?;
+        let current: PaymentStatus = row
+            .try_get::<String, _>("status")?
+            .parse()
+            .map_err(ApiError::BadRequest)?;
+        current.transition_to(status)?;
+        if current == status {
+            let updated_at = row.try_get("updated_at")?;
+            transaction.commit().await?;
+            return Ok(updated_at);
+        }
         let status_str = status.to_string();
         let now = Utc::now();
-        sqlx::query(
+        let updated_at = sqlx::query_scalar(
             r#"
             UPDATE payment_intents
             SET status = $1, updated_at = $2
             WHERE id = $3
+            RETURNING updated_at
             "#,
         )
         .bind(status_str)
         .bind(now)
         .bind(id)
-        .execute(&self.pool)
+        .fetch_one(&mut *transaction)
         .await?;
-
-        Ok(())
+        transaction.commit().await?;
+        Ok(updated_at)
     }
 }
 
@@ -344,12 +427,16 @@ impl PaymentIntentRepository for InMemoryPaymentIntentRepository {
         Ok(list)
     }
 
-    async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<()> {
+    async fn update_status(&self, id: Uuid, status: PaymentStatus) -> Result<DateTime<Utc>> {
         let mut map = self.storage.write().await;
-        if let Some(intent) = map.get_mut(&id) {
+        let intent = map
+            .get_mut(&id)
+            .ok_or_else(|| ApiError::NotFound(format!("Payment intent {id} not found")))?;
+        intent.status.transition_to(status)?;
+        if intent.status != status {
             intent.status = status;
             intent.updated_at = Utc::now();
         }
-        Ok(())
+        Ok(intent.updated_at)
     }
 }
