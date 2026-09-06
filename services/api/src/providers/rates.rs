@@ -83,7 +83,7 @@ impl BitnobRateProvider {
             .filter(|s| !s.trim().is_empty());
 
         let base_url = match mode {
-            crate::config::ProviderMode::Production => "https://api.bitnob.co".to_string(),
+            crate::config::ProviderMode::Production => "https://api.bitnob.com".to_string(),
             _ => "https://sandboxapi.bitnob.co".to_string(),
         };
 
@@ -109,7 +109,7 @@ impl BitnobRateProvider {
         base_url: Option<String>,
     ) -> Self {
         let default_url = match mode {
-            crate::config::ProviderMode::Production => "https://api.bitnob.co".to_string(),
+            crate::config::ProviderMode::Production => "https://api.bitnob.com".to_string(),
             _ => "https://sandboxapi.bitnob.co".to_string(),
         };
 
@@ -164,24 +164,50 @@ impl Default for BitnobRateProvider {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct BitnobExchangeRateDetails {
-    rate: Option<f64>,
+/// Helper to recursively extract a numeric rate from various Bitnob response layouts.
+/// Bitnob may return the exchange rate as a float (`1610.50`) or as a string (`"1610.50"`),
+/// nested under `data.payout.exchange_rate.rate`, `data.quote.exchange_rate.rate`,
+/// `data.exchange_rate.rate`, or directly as `data.rate`.
+fn extract_rate_from_value(val: &serde_json::Value) -> Option<f64> {
+    match val {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => {
+            let clean = s.replace(',', "");
+            clean.trim().parse::<f64>().ok()
+        }
+        serde_json::Value::Object(map) => {
+            // 1. Direct "rate"
+            if let Some(r) = map.get("rate").and_then(extract_rate_from_value) {
+                return Some(r);
+            }
+            // 2. "exchange_rate" object
+            if let Some(er) = map.get("exchange_rate").and_then(extract_rate_from_value) {
+                return Some(er);
+            }
+            // 3. "payout" container
+            if let Some(payout) = map.get("payout").and_then(extract_rate_from_value) {
+                return Some(payout);
+            }
+            // 4. "quote" container
+            if let Some(quote) = map.get("quote").and_then(extract_rate_from_value) {
+                return Some(quote);
+            }
+            None
+        }
+        serde_json::Value::Array(arr) => arr.first().and_then(extract_rate_from_value),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct BitnobQuoteData {
-    rate: Option<f64>,
-    exchange_rate: Option<BitnobExchangeRateDetails>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct BitnobQuoteResponse {
+    #[serde(default)]
     status: Option<bool>,
-    data: Option<BitnobQuoteData>,
+    #[serde(default)]
+    success: Option<bool>,
+    #[serde(default)]
+    data: Option<serde_json::Value>,
+    #[serde(default)]
     message: Option<String>,
 }
 
@@ -239,10 +265,12 @@ impl PlatformRateProvider for BitnobRateProvider {
             _ => {
                 let env_name = self.mode.to_string();
                 return Err(ProviderError::NotConfigured(format!(
-                    "Bitnob modern credentials (BITNOB_CLIENT_ID, BITNOB_CLIENT_SECRET) missing in {env_name}"
+                    "Bitnob credentials (BITNOB_CLIENT_ID, BITNOB_CLIENT_SECRET) missing in {env_name}"
                 )));
             }
         };
+
+        let start_time = std::time::Instant::now();
 
         let timestamp = Utc::now().timestamp() as u64;
         let mut nonce_bytes = [0u8; 16];
@@ -270,53 +298,131 @@ impl PlatformRateProvider for BitnobRateProvider {
             .header("X-Auth-Nonce", nonce)
             .header("X-Auth-Signature", signature);
 
-        let response = request
-            .body(payload)
-            .send()
-            .await
-            .map_err(|e| ProviderError::Unavailable(format!("Bitnob request failed: {e}")))?;
+        let response = match request.body(payload).send().await {
+            Ok(resp) => resp,
+            Err(err) => {
+                let latency_ms = start_time.elapsed().as_millis() as u64;
+                tracing::warn!(
+                    provider = "bitnob",
+                    environment = %self.mode,
+                    operation = "rate_quote",
+                    market = %market_upper,
+                    result = "failure",
+                    latency_ms = latency_ms,
+                    error = %err,
+                    "Bitnob request network failure"
+                );
+                return Err(ProviderError::Unavailable(format!(
+                    "Bitnob request failed: {err}"
+                )));
+            }
+        };
 
         let status = response.status();
+        let latency_ms = start_time.elapsed().as_millis() as u64;
+
         if !status.is_success() {
             let err_body = response.text().await.unwrap_or_default();
             tracing::warn!(
-                status = %status,
-                "Bitnob rate endpoint returned non-success"
+                provider = "bitnob",
+                environment = %self.mode,
+                operation = "rate_quote",
+                market = %market_upper,
+                result = "failure",
+                latency_ms = latency_ms,
+                http_status = %status,
+                "Bitnob rate endpoint returned non-success HTTP status"
             );
             return Err(ProviderError::Unavailable(format!(
                 "Bitnob HTTP {status}: {err_body}"
             )));
         }
 
-        let parsed = response
-            .json::<BitnobQuoteResponse>()
-            .await
-            .map_err(|e| ProviderError::Internal(format!("Failed to parse Bitnob quote: {e}")))?;
+        let parsed = match response.json::<BitnobQuoteResponse>().await {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::warn!(
+                    provider = "bitnob",
+                    environment = %self.mode,
+                    operation = "rate_quote",
+                    market = %market_upper,
+                    result = "failure",
+                    latency_ms = latency_ms,
+                    error = %err,
+                    "Failed to parse Bitnob quote JSON response"
+                );
+                return Err(ProviderError::Internal(format!(
+                    "Failed to parse Bitnob quote: {err}"
+                )));
+            }
+        };
 
-        let extracted_rate = parsed.data.as_ref().and_then(|d| {
-            d.rate
-                .or_else(|| d.exchange_rate.as_ref().and_then(|er| er.rate))
-        });
+        // Check success flag if explicitly provided
+        let is_status_ok = parsed.status.unwrap_or(true) && parsed.success.unwrap_or(true);
+        if !is_status_ok {
+            let msg = parsed
+                .message
+                .unwrap_or_else(|| "Bitnob returned unsuccessful status".to_string());
+            tracing::warn!(
+                provider = "bitnob",
+                environment = %self.mode,
+                operation = "rate_quote",
+                market = %market_upper,
+                result = "failure",
+                latency_ms = latency_ms,
+                message = %msg,
+                "Bitnob response indicated failure"
+            );
+            return Err(ProviderError::Unavailable(msg));
+        }
 
+        let extracted_rate = parsed.data.as_ref().and_then(extract_rate_from_value);
+
+        // Under no circumstances can sandbox produce is_live = true
         let is_live = self.mode == crate::config::ProviderMode::Production;
 
         match extracted_rate {
-            Some(rate) if rate > 0.0 => Ok(HanbovaRate::new(
-                market_upper,
-                "USD",
-                currency_upper,
-                asset_upper,
-                rate,
-                "bitnob",
-                self.mode.to_string(),
-                is_live, // true ONLY for verified production provider quote, NEVER sandbox
-                false,   // is_stale = false
-                Utc::now(),
-                None,
-            )),
-            _ => Err(ProviderError::Unavailable(parsed.message.unwrap_or_else(
-                || "No rate returned in Bitnob response".to_string(),
-            ))),
+            Some(rate) if rate.is_finite() && rate > 0.0 => {
+                tracing::info!(
+                    provider = "bitnob",
+                    environment = %self.mode,
+                    operation = "rate_quote",
+                    market = %market_upper,
+                    result = "success",
+                    latency_ms = latency_ms,
+                    "Bitnob rate quote retrieved successfully"
+                );
+
+                Ok(HanbovaRate::new(
+                    market_upper,
+                    "USD",
+                    currency_upper,
+                    asset_upper,
+                    rate,
+                    "bitnob",
+                    self.mode.to_string(),
+                    is_live, // true ONLY for verified production provider quote, NEVER sandbox
+                    false,   // is_stale = false
+                    Utc::now(),
+                    None,
+                ))
+            }
+            _ => {
+                let msg = parsed.message.unwrap_or_else(|| {
+                    "No valid positive rate returned in Bitnob response".to_string()
+                });
+                tracing::warn!(
+                    provider = "bitnob",
+                    environment = %self.mode,
+                    operation = "rate_quote",
+                    market = %market_upper,
+                    result = "failure",
+                    latency_ms = latency_ms,
+                    reason = "rate_missing_or_non_positive",
+                    "Bitnob rate quote rejected"
+                );
+                Err(ProviderError::Unavailable(msg))
+            }
         }
     }
 }
