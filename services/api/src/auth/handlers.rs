@@ -41,20 +41,20 @@ where
             .headers
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
-            .ok_or_else(|| ApiError::BadRequest("Missing Authorization header".to_string()))?;
+            .ok_or_else(|| ApiError::Unauthorized("Authentication is required".to_string()))?;
 
         if !auth_header.starts_with("Bearer ") {
-            return Err(ApiError::BadRequest(
-                "Invalid Authorization format. Expected 'Bearer <token>'".to_string(),
+            return Err(ApiError::Unauthorized(
+                "Authentication is required".to_string(),
             ));
         }
 
         let token = &auth_header[7..];
         let claims = validate_access_token(token, &app_state.config.jwt_secret)
-            .map_err(|_| ApiError::BadRequest("Invalid or expired access token".to_string()))?;
+            .map_err(|_| ApiError::Unauthorized("Authentication is required".to_string()))?;
 
         let user_id = Uuid::parse_str(&claims.sub)
-            .map_err(|_| ApiError::BadRequest("Invalid subject in token".to_string()))?;
+            .map_err(|_| ApiError::Unauthorized("Authentication is required".to_string()))?;
 
         Ok(AuthUser {
             user_id,

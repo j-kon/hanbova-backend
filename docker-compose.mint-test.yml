@@ -1,0 +1,19 @@
+# Disposable, valueless integration fixtures only. No existing mint volumes.
+services:
+  cashu-mint-test:
+    image: cashubtc/nutshell:0.20.3@sha256:f039b0e61f64d67c7212f5472eb5d021c3703cd9e72170aa924906ce6bd1f2ed
+    command: ["poetry", "run", "mint", "--host", "0.0.0.0", "--port", "3338"]
+    environment:
+      MINT_BACKEND_BOLT11_SAT: FakeWallet
+      MINT_PRIVATE_KEY: hanbova-disposable-compatibility-test-only
+      MINT_INPUT_FEE_PPK: "0"
+    ports:
+      - "127.0.0.1:${HANBOVA_TEST_MINT_PORT:-3339}:3338"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3338/v1/info', timeout=2).read()"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s

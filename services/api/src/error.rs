@@ -41,6 +41,9 @@ pub enum ApiError {
     #[error("Resource not found: {0}")]
     NotFound(String),
 
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
     #[error("Internal server error: {0}")]
     Internal(String),
 }
@@ -81,6 +84,7 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg),
             ApiError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg),
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg),
+            ApiError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg),
             ApiError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);
                 (

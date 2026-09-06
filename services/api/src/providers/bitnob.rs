@@ -32,6 +32,12 @@ impl BitnobAdapter {
     }
 }
 
+impl Default for BitnobAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl PayoutProvider for BitnobAdapter {
     async fn get_supported_corridors(

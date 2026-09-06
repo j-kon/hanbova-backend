@@ -19,6 +19,10 @@ use crate::{
     state::AppState,
 };
 
+#[cfg(test)]
+#[path = "protected_messages_tests.rs"]
+mod tests;
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -138,6 +142,19 @@ pub async fn create_protected_message_handler(
         ))
     })?;
 
+    if let Some(payment_id) = payload.payment_intent_id {
+        state
+            .payment_service
+            .validate_protected_message_link(
+                payment_id,
+                auth_user.user_id,
+                &auth_user.username,
+                recipient.id,
+                &recipient.username,
+            )
+            .await?;
+    }
+
     let message_id = Uuid::new_v4();
     let row = ProtectedMessageRow {
         id: message_id,
@@ -145,7 +162,7 @@ pub async fn create_protected_message_handler(
         sender_user_id: auth_user.user_id,
         recipient_user_id: recipient.id,
         sender_username: auth_user.username.clone(),
-        recipient_username: clean_recipient.to_string(),
+        recipient_username: recipient.username,
         encrypted_payload: payload.encrypted_payload,
         payload_version: payload.payload_version,
         status: "delivered".to_string(),

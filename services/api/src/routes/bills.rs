@@ -10,8 +10,7 @@ use serde_json::json;
 
 use crate::{
     providers::{
-        dtone::DtOneAdapter, BillQuoteRequest, BillServiceType, CreateBillPaymentRequest,
-        DigitalServicesProvider,
+        dtone::DtOneAdapter, BillQuoteRequest, CreateBillPaymentRequest, DigitalServicesProvider,
     },
     state::AppState,
 };
@@ -67,7 +66,7 @@ async fn get_services(Query(q): Query<CountryQuery>) -> impl IntoResponse {
 
 async fn get_billers(Query(q): Query<BillersQuery>) -> impl IntoResponse {
     let country = q.country.unwrap_or_else(|| "KE".to_string());
-    let service_type = q.service.as_deref().and_then(BillServiceType::from_str);
+    let service_type = q.service.as_deref().and_then(|value| value.parse().ok());
     let adapter = DtOneAdapter::new();
     match adapter.get_billers(&country, service_type.as_ref()).await {
         Ok(billers) => (StatusCode::OK, Json(json!({ "billers": billers }))),

@@ -47,6 +47,7 @@ argon2 = "0.5"
 jsonwebtoken = "9.3"
 rand = "0.8"
 sha2 = "0.10"
+hmac = "0.12"
 hex = "0.4"
 
 # Cashu CDK (Pure Rust redb / memory storage)

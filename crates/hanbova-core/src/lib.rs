@@ -9,6 +9,7 @@ pub mod market;
 pub mod payment_intent;
 pub mod payment_status;
 pub mod payment_type;
+pub mod rate;
 
 pub use amount::SatoshiAmount;
 pub use error::{CoreError, Result};
@@ -16,3 +17,4 @@ pub use market::{CountryCode, CurrencyCode, MarketCapabilities, MarketInfo, User
 pub use payment_intent::PaymentIntent;
 pub use payment_status::PaymentStatus;
 pub use payment_type::PaymentType;
+pub use rate::{HanbovaRate, RateFreshness, RateSource};

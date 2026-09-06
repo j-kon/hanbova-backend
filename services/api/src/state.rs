@@ -6,7 +6,7 @@ use crate::{
         repository::{InMemoryUserRepository, PgUserRepository, UserRepository},
         AuthService,
     },
-    config::AppConfig,
+    config::{AppConfig, ProviderMode},
     repositories::{
         InMemoryPaymentIntentRepository, InMemoryProtectedMessageRepository,
         PgPaymentIntentRepository, PgProtectedMessageRepository, ProtectedMessageRepository,
@@ -15,6 +15,14 @@ use crate::{
 };
 use hanbova_lightning::{CashuLightningBridge, LightningProvider, MockLightningProvider};
 use hanbova_protected_payments::MockProtectedPaymentProvider;
+
+#[derive(Debug, thiserror::Error)]
+pub enum StateError {
+    #[error("production requires a PostgreSQL connection")]
+    MissingDatabase,
+    #[error("production providers have not been configured")]
+    ProductionProvidersUnavailable,
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -25,9 +33,24 @@ pub struct AppState {
     pub protected_message_repo: Arc<dyn ProtectedMessageRepository>,
     pub lightning_provider: Arc<dyn LightningProvider>,
     pub cashu_bridge: Arc<CashuLightningBridge>,
+    pub rate_service: Arc<crate::services::HanbovaRateService>,
 }
 
 impl AppState {
+    /// Builds state only when the selected environment has the dependencies it
+    /// needs.  The current provider adapters are deterministic mocks, so they
+    /// are deliberately unavailable to a production process.
+    pub fn try_new(config: AppConfig, pool: Option<PgPool>) -> Result<Self, StateError> {
+        if config.is_production() && pool.is_none() {
+            return Err(StateError::MissingDatabase);
+        }
+        if config.provider_mode == ProviderMode::Production {
+            return Err(StateError::ProductionProvidersUnavailable);
+        }
+
+        Ok(Self::new(config, pool))
+    }
+
     pub fn new(config: AppConfig, pool: Option<PgPool>) -> Self {
         let protected_provider = Arc::new(MockProtectedPaymentProvider::new());
 
@@ -60,6 +83,10 @@ impl AppState {
             Arc::new(MockLightningProvider::new(100_000));
         let cashu_bridge = Arc::new(CashuLightningBridge::new(&config.mint_url));
 
+        let rate_provider: Arc<dyn crate::providers::PlatformRateProvider> =
+            Arc::new(crate::providers::BitnobRateProvider::new());
+        let rate_service = Arc::new(crate::services::HanbovaRateService::new(rate_provider));
+
         Self {
             config,
             db_pool: pool,
@@ -68,6 +95,7 @@ impl AppState {
             protected_message_repo,
             lightning_provider,
             cashu_bridge,
+            rate_service,
         }
     }
 }

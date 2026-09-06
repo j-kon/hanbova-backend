@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[lib]
+name = "hanbova_api"
+path = "src/lib.rs"
+
 [[bin]]
 name = "hanbova-api"
 path = "src/main.rs"
@@ -33,7 +37,10 @@ argon2 = { workspace = true }
 jsonwebtoken = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
+hmac = { workspace = true }
 hex = { workspace = true }
+reqwest = { workspace = true }
+futures = "0.3"
 secp256k1 = { workspace = true }
 
 [dev-dependencies]
