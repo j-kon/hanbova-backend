@@ -4,5 +4,5 @@ pub mod client;
 pub mod models;
 
 pub use adapter::BitnobAdapter;
-pub use client::BitnobClient;
+pub use client::{classify_error, BitnobClient};
 pub use models::*;

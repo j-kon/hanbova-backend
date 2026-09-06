@@ -8,7 +8,9 @@ use axum::{
 use hanbova_api::{
     config::ProviderMode,
     providers::{
-        bitnob::{auth::generate_signature, BitnobClient},
+        bitnob::{
+            auth::generate_signature, classify_error, BitnobClient, BitnobPayoutQuoteRequest,
+        },
         BitnobRateProvider, PlatformRateProvider, ProviderError,
     },
     services::HanbovaRateService,
@@ -40,6 +42,10 @@ const MODE_MISSING_RATE: usize = 8;
 const MODE_STATUS_FALSE: usize = 9;
 const MODE_WRONG_CORRIDOR: usize = 10;
 const MODE_WRONG_CURRENCY: usize = 11;
+const MODE_HTTP_400_BAD_REQUEST: usize = 12;
+const MODE_HTTP_404_NOT_FOUND: usize = 13;
+const MODE_HTTP_429_TOO_MANY_REQUESTS: usize = 14;
+const MODE_HTTP_403_GENERIC_FORBIDDEN: usize = 15;
 
 fn verify_auth_headers(headers: &HeaderMap) {
     assert!(
@@ -145,6 +151,20 @@ async fn mock_payout_quotes_handler(
     );
     assert_eq!(req_json["amount"], "1");
 
+    // Verify reference is present, string, non-empty, and starts with HANBOVA_RATE_
+    assert!(
+        req_json.get("reference").is_some(),
+        "Missing reference in quote request"
+    );
+    let ref_str = req_json["reference"]
+        .as_str()
+        .expect("reference must be a string");
+    assert!(!ref_str.is_empty(), "reference must not be empty");
+    assert!(
+        ref_str.starts_with("HANBOVA_RATE_"),
+        "reference must start with HANBOVA_RATE_"
+    );
+
     match state.response_mode.load(Ordering::SeqCst) {
         MODE_SUCCESS_NUMERIC => (
             StatusCode::OK,
@@ -190,6 +210,17 @@ async fn mock_payout_quotes_handler(
             })
             .to_string(),
         ),
+        MODE_HTTP_400_BAD_REQUEST => (
+            StatusCode::BAD_REQUEST,
+            [("content-type", "application/json")],
+            json!({
+                "title": "Bad Request",
+                "status": 400,
+                "detail": "reference is required",
+                "code": "VALIDATION_ERROR"
+            })
+            .to_string(),
+        ),
         MODE_HTTP_401_UNAUTHORIZED => (
             StatusCode::UNAUTHORIZED,
             [("content-type", "application/json")],
@@ -211,6 +242,40 @@ async fn mock_payout_quotes_handler(
                 "status": 403,
                 "detail": "IP address not whitelisted",
                 "correlation_id": "req-ip-whitelist"
+            })
+            .to_string(),
+        ),
+        MODE_HTTP_403_GENERIC_FORBIDDEN => (
+            StatusCode::FORBIDDEN,
+            [("content-type", "application/json")],
+            json!({
+                "type": "https://api.bitnob.com/errors/FORBIDDEN",
+                "title": "Forbidden",
+                "status": 403,
+                "detail": "Account restricted",
+                "code": "FORBIDDEN"
+            })
+            .to_string(),
+        ),
+        MODE_HTTP_404_NOT_FOUND => (
+            StatusCode::NOT_FOUND,
+            [("content-type", "application/json")],
+            json!({
+                "title": "Not Found",
+                "status": 404,
+                "detail": "Endpoint not found",
+                "code": "NOT_FOUND"
+            })
+            .to_string(),
+        ),
+        MODE_HTTP_429_TOO_MANY_REQUESTS => (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("content-type", "application/json")],
+            json!({
+                "title": "Too Many Requests",
+                "status": 429,
+                "detail": "Rate limit exceeded",
+                "code": "RATE_LIMITED"
             })
             .to_string(),
         ),
@@ -329,6 +394,69 @@ async fn mock_payout_quotes_handler(
     }
 }
 
+async fn mock_exchange_rates_handler(
+    State(state): State<MockServerState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    verify_auth_headers(&headers);
+
+    match state.response_mode.load(Ordering::SeqCst) {
+        MODE_HTTP_401_UNAUTHORIZED => (
+            StatusCode::UNAUTHORIZED,
+            [("content-type", "application/json")],
+            json!({
+                "type": "https://api.bitnob.com/errors/UNAUTHORIZED",
+                "title": "Unauthorized",
+                "status": 401,
+                "detail": "Authentication failed"
+            })
+            .to_string(),
+        ),
+        MODE_HTTP_403_FORBIDDEN => (
+            StatusCode::FORBIDDEN,
+            [("content-type", "application/json")],
+            json!({
+                "type": "https://api.bitnob.com/errors/FORBIDDEN",
+                "title": "Forbidden",
+                "status": 403,
+                "detail": "IP address not whitelisted"
+            })
+            .to_string(),
+        ),
+        MODE_HTTP_400_BAD_REQUEST => (
+            StatusCode::BAD_REQUEST,
+            [("content-type", "application/json")],
+            json!({
+                "title": "Bad Request",
+                "status": 400,
+                "detail": "Invalid currency pair",
+                "code": "VALIDATION_ERROR"
+            })
+            .to_string(),
+        ),
+        _ => (
+            StatusCode::OK,
+            [("content-type", "application/json")],
+            json!({
+                "success": true,
+                "message": "Exchange rate retrieved",
+                "data": {
+                    "base_currency": "USDT",
+                    "target_currency": "NGN",
+                    "buy_rate": "1620.50",
+                    "sell_rate": "1610.00",
+                    "mid_rate": "1615.25",
+                    "inverse_rate": "0.000619",
+                    "timestamp": "2026-09-06T22:00:00Z",
+                    "valid_for_seconds": 300,
+                    "percent_change_24h": "0.00"
+                }
+            })
+            .to_string(),
+        ),
+    }
+}
+
 async fn start_mock_server() -> (String, Arc<AtomicUsize>) {
     let response_mode = Arc::new(AtomicUsize::new(MODE_SUCCESS_NUMERIC));
     let state = MockServerState {
@@ -337,6 +465,7 @@ async fn start_mock_server() -> (String, Arc<AtomicUsize>) {
 
     let app = Router::new()
         .route("/api/whoami", get(mock_whoami_handler))
+        .route("/api/exchange-rates", get(mock_exchange_rates_handler))
         .route("/api/payouts/quotes", post(mock_payout_quotes_handler))
         .with_state(state);
 
@@ -787,7 +916,207 @@ async fn test_15_quote_with_mismatched_exchange_rate_currency_is_rejected() {
         .contains("unexpected exchange_rate currency"));
 }
 
-// Opt-in real Bitnob sandbox test: only executed when explicitly triggered and credentials exist
+// 16. Payout quote request generates unique reference starting with HANBOVA_RATE_
+#[test]
+fn test_16_payout_quote_unique_reference() {
+    let req1 = BitnobPayoutQuoteRequest::new_indicative("NG", "USDT", "NGN");
+    let req2 = BitnobPayoutQuoteRequest::new_indicative("NG", "USDT", "NGN");
+
+    assert!(
+        req1.reference.starts_with("HANBOVA_RATE_"),
+        "Reference must start with HANBOVA_RATE_"
+    );
+    assert!(
+        req2.reference.starts_with("HANBOVA_RATE_"),
+        "Reference must start with HANBOVA_RATE_"
+    );
+    assert_ne!(
+        req1.reference, req2.reference,
+        "Two generated quote requests must never share the same reference"
+    );
+
+    let json1 = serde_json::to_string(&req1).expect("serialize quote 1");
+    assert!(json1.contains(&format!(r#""reference":"{}""#, req1.reference)));
+}
+
+// 17. HTTP 400 Bad Request maps to ProviderError::ValidationFailed with safe detail
+#[tokio::test]
+async fn test_17_mock_http_400_validation_error_handling() {
+    let (base_url, mode) = start_mock_server().await;
+    mode.store(MODE_HTTP_400_BAD_REQUEST, Ordering::SeqCst);
+
+    let client = BitnobClient::with_config(
+        Some("client-id-123".to_string()),
+        Some("client-secret-abc".to_string()),
+        ProviderMode::Sandbox,
+        Some(base_url),
+    );
+
+    let req = BitnobPayoutQuoteRequest::new_indicative("NG", "USDT", "NGN");
+    let result = client.create_payout_quote(&req).await;
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ProviderError::ValidationFailed(detail) => {
+            assert!(
+                detail.contains("reference is required"),
+                "ValidationFailed must contain safe provider detail, got: {detail}"
+            );
+            assert!(
+                !detail.contains("Bitnob HTTP error 400"),
+                "Must not collapse to generic 400 string"
+            );
+        }
+        other => panic!("Expected ProviderError::ValidationFailed, got {other:?}"),
+    }
+}
+
+// 18. Error classification diagnostics differentiates error classes
+#[test]
+fn test_18_error_classification_diagnostics() {
+    let err_val = ProviderError::ValidationFailed("reference is required".to_string());
+    assert_eq!(classify_error(&err_val), "REQUEST_VALIDATION_FAILED");
+
+    let err_conflict =
+        ProviderError::ValidationFailed("Bitnob request conflict: duplicate".to_string());
+    assert_eq!(classify_error(&err_conflict), "PROVIDER_CONFLICT");
+
+    let err_auth = ProviderError::Unavailable("Bitnob authentication failed".to_string());
+    assert_eq!(classify_error(&err_auth), "AUTHENTICATION_FAILED");
+
+    let err_whitelist = ProviderError::Unavailable(
+        "Bitnob access forbidden (IP address not whitelisted)".to_string(),
+    );
+    assert_eq!(classify_error(&err_whitelist), "IP_NOT_WHITELISTED");
+
+    let err_forbidden = ProviderError::Unavailable("Bitnob access forbidden".to_string());
+    assert_eq!(classify_error(&err_forbidden), "PROVIDER_FORBIDDEN");
+
+    let err_not_found = ProviderError::Unavailable("Bitnob endpoint not found".to_string());
+    assert_eq!(classify_error(&err_not_found), "ENDPOINT_NOT_FOUND");
+
+    let err_rate_limit = ProviderError::RateLimit("Bitnob rate limit exceeded".to_string());
+    assert_eq!(classify_error(&err_rate_limit), "RATE_LIMITED");
+
+    let err_unavail = ProviderError::Unavailable("Bitnob provider unavailable".to_string());
+    assert_eq!(classify_error(&err_unavail), "PROVIDER_UNAVAILABLE");
+
+    let err_net = ProviderError::Unavailable("Bitnob network request failed".to_string());
+    assert_eq!(classify_error(&err_net), "NETWORK_ERROR");
+
+    let err_parse = ProviderError::Internal("Failed to parse Bitnob quote response".to_string());
+    assert_eq!(classify_error(&err_parse), "MALFORMED_RESPONSE");
+
+    let err_missing = ProviderError::NotConfigured("missing keys".to_string());
+    assert_eq!(classify_error(&err_missing), "MISSING_CREDENTIALS");
+}
+
+// 19. Dedicated exchange rate endpoint success in mock
+#[tokio::test]
+async fn test_19_client_exchange_rate_success() {
+    let (base_url, _mode) = start_mock_server().await;
+
+    let client = BitnobClient::with_config(
+        Some("client-id-123".to_string()),
+        Some("client-secret-abc".to_string()),
+        ProviderMode::Sandbox,
+        Some(base_url),
+    );
+
+    let rate_data = client
+        .get_exchange_rate("USDT", "NGN")
+        .await
+        .expect("exchange rate success");
+
+    assert_eq!(rate_data.base_currency.as_deref(), Some("USDT"));
+    assert_eq!(rate_data.target_currency.as_deref(), Some("NGN"));
+    assert_eq!(rate_data.parse_rate(), Some(1615.25));
+}
+
+// Direct isolated test: STEP 1 WHOAMI
+#[tokio::test]
+#[ignore]
+async fn test_real_bitnob_whoami() {
+    let client_id = std::env::var("BITNOB_CLIENT_ID").ok();
+    let client_secret = std::env::var("BITNOB_CLIENT_SECRET").ok();
+
+    if client_id.as_deref().unwrap_or("").trim().is_empty()
+        || client_secret.as_deref().unwrap_or("").trim().is_empty()
+    {
+        eprintln!("[SKIP] BITNOB_CLIENT_ID or BITNOB_CLIENT_SECRET not set");
+        return;
+    }
+
+    let client = BitnobClient::with_config(client_id, client_secret, ProviderMode::Sandbox, None);
+
+    println!("==================================================");
+    println!("STEP 1: AUTHENTICATION");
+    println!("Endpoint: /api/whoami");
+
+    match client.whoami().await {
+        Ok(whoami) => {
+            println!("HTTP status: 200");
+            println!("Result: PASS");
+            println!("Classification: NONE");
+            println!("Response: {:?}", whoami.data);
+            println!("==================================================");
+        }
+        Err(err) => {
+            let classification = classify_error(&err);
+            println!("Result: FAIL");
+            println!("Classification: {classification}");
+            println!("Safe detail: {err}");
+            println!("==================================================");
+            panic!("FAIL_{classification}: {err}");
+        }
+    }
+}
+
+// Direct isolated test: STEP 2 EXCHANGE RATE
+#[tokio::test]
+#[ignore]
+async fn test_real_bitnob_exchange_rate() {
+    let client_id = std::env::var("BITNOB_CLIENT_ID").ok();
+    let client_secret = std::env::var("BITNOB_CLIENT_SECRET").ok();
+
+    if client_id.as_deref().unwrap_or("").trim().is_empty()
+        || client_secret.as_deref().unwrap_or("").trim().is_empty()
+    {
+        eprintln!("[SKIP] BITNOB_CLIENT_ID or BITNOB_CLIENT_SECRET not set");
+        return;
+    }
+
+    let client = BitnobClient::with_config(client_id, client_secret, ProviderMode::Sandbox, None);
+
+    println!("==================================================");
+    println!("STEP 2: EXCHANGE RATE");
+    println!("Endpoint: /api/exchange-rates?from=USDT&to=NGN");
+
+    match client.get_exchange_rate("USDT", "NGN").await {
+        Ok(data) => {
+            let rate = data.parse_rate().unwrap_or(0.0);
+            println!("Status: PASS");
+            println!("Rate received: YES");
+            println!("Base currency: {:?}", data.base_currency);
+            println!("Target currency: {:?}", data.target_currency);
+            println!("Mid rate: {:?}", data.mid_rate);
+            println!("Parsed rate: {rate}");
+            println!("==================================================");
+            assert!(rate > 0.0);
+        }
+        Err(err) => {
+            let classification = classify_error(&err);
+            println!("Status: FAIL");
+            println!("Rate received: NO");
+            println!("Classification: {classification}");
+            println!("Safe detail: {err}");
+            println!("==================================================");
+            panic!("FAIL_{classification}: {err}");
+        }
+    }
+}
+
+// Multi-phase real Bitnob sandbox test: reports Steps 1, 2, and 3 explicitly
 #[tokio::test]
 #[ignore]
 async fn test_real_bitnob_sandbox_connectivity() {
@@ -809,38 +1138,52 @@ async fn test_real_bitnob_sandbox_connectivity() {
     );
 
     // STEP 1: Verify /api/whoami first
+    println!("STEP 1 — AUTHENTICATION");
+    println!("GET /api/whoami");
     match client.whoami().await {
         Ok(_whoami) => {
-            println!("Authentication: PASS");
+            println!("Status: PASS");
         }
         Err(err) => {
-            let err_str = err.to_string();
-            let classification = if err_str.contains("IP address not whitelisted") {
-                "IP_NOT_WHITELISTED"
-            } else if err_str.contains("authentication failed") || err_str.contains("401") {
-                "AUTHENTICATION_FAILED"
-            } else if err_str.contains("rate limit") || err_str.contains("429") {
-                "RATE_LIMITED"
-            } else if err_str.contains("access forbidden") || err_str.contains("403") {
-                "PROVIDER_FORBIDDEN"
-            } else if err_str.contains("network") {
-                "NETWORK_ERROR"
-            } else {
-                "PROVIDER_UNAVAILABLE"
-            };
-            eprintln!("Authentication: FAIL");
-            eprintln!("FAILURE CLASSIFICATION: {classification}");
-            eprintln!("Error: {err}");
+            let classification = classify_error(&err);
+            println!("Status: FAIL");
+            println!("Classification: {classification}");
+            println!("Safe detail: {err}");
             panic!("FAIL_{classification}: {err}");
         }
     }
 
-    // STEP 2: Verify POST /api/payouts/quotes (USDT -> NGN)
+    // STEP 2: Dedicated exchange rate diagnostic: GET /api/exchange-rates?from=USDT&to=NGN
+    println!("\nSTEP 2 — EXCHANGE RATE");
+    println!("USDT -> NGN");
+    match client.get_exchange_rate("USDT", "NGN").await {
+        Ok(rate_data) => {
+            println!("Status: PASS");
+            println!("Rate received: YES");
+            if let Some(r) = rate_data.parse_rate() {
+                println!("Rate: {r}");
+            }
+        }
+        Err(err) => {
+            let classification = classify_error(&err);
+            println!("Status: FAIL");
+            println!("Classification: {classification}");
+            println!("Safe detail: {err}");
+            // Non-fatal if exchange rate API has different pair support in sandbox, but report
+        }
+    }
+
+    // STEP 3: Verify POST /api/payouts/quotes (USDT -> NGN)
+    println!("\nSTEP 3 — PAYOUT QUOTE");
+    println!("POST /api/payouts/quotes");
+    println!("Reference generated: YES");
+
     let provider =
         BitnobRateProvider::with_config(client_id, client_secret, ProviderMode::Sandbox, None);
     match provider.get_rate("NG", "USDT", "NGN").await {
         Ok(rate) => {
-            println!("Quote request: PASS");
+            println!("Status: PASS");
+            println!("Rate received: YES");
             println!("Provider: {}", rate.provider);
             println!("Environment: {}", rate.environment);
             println!("Market: {}", rate.market);
@@ -856,34 +1199,11 @@ async fn test_real_bitnob_sandbox_connectivity() {
             assert!(rate.rate > 0.0);
         }
         Err(err) => {
-            let err_str = err.to_string();
-            let classification = if err_str.contains("IP address not whitelisted") {
-                "IP_NOT_WHITELISTED"
-            } else if err_str.contains("unexpected from_asset")
-                || err_str.contains("unexpected to_currency")
-                || err_str.contains("unexpected exchange_rate currency")
-            {
-                "UNSUPPORTED_CORRIDOR"
-            } else if err_str.contains("Missing or invalid exchange rate")
-                || err_str.contains("rate must be greater than zero")
-            {
-                "QUOTE_VALIDATION_FAILED"
-            } else if err_str.contains("Failed to parse") {
-                "MALFORMED_RESPONSE"
-            } else if err_str.contains("authentication failed") {
-                "AUTHENTICATION_FAILED"
-            } else if err_str.contains("rate limit") {
-                "RATE_LIMITED"
-            } else if err_str.contains("access forbidden") {
-                "PROVIDER_FORBIDDEN"
-            } else if err_str.contains("network") {
-                "NETWORK_ERROR"
-            } else {
-                "PROVIDER_UNAVAILABLE"
-            };
-            eprintln!("Quote request: FAIL");
-            eprintln!("FAILURE CLASSIFICATION: {classification}");
-            eprintln!("Error: {err}");
+            let classification = classify_error(&err);
+            println!("Status: FAIL");
+            println!("Rate received: NO");
+            println!("Classification: {classification}");
+            println!("Safe detail: {err}");
             panic!("FAIL_{classification}: {err}");
         }
     }

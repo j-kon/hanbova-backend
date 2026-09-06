@@ -5,8 +5,8 @@ use std::time::Duration;
 use super::{
     auth::{generate_nonce, generate_signature},
     models::{
-        BitnobErrorDetail, BitnobPayoutQuote, BitnobPayoutQuoteRequest, BitnobQuoteResponse,
-        WhoamiResponse,
+        BitnobErrorDetail, BitnobExchangeRateData, BitnobExchangeRateResponse, BitnobPayoutQuote,
+        BitnobPayoutQuoteRequest, BitnobQuoteResponse, WhoamiResponse,
     },
 };
 use crate::config::ProviderMode;
@@ -53,10 +53,12 @@ impl BitnobClient {
     pub fn with_mode(mode: ProviderMode) -> Self {
         let client_id = std::env::var("BITNOB_CLIENT_ID")
             .ok()
-            .filter(|s| !s.trim().is_empty());
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let client_secret = std::env::var("BITNOB_CLIENT_SECRET")
             .ok()
-            .filter(|s| !s.trim().is_empty());
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
 
         let base_url = match mode {
             ProviderMode::Sandbox | ProviderMode::Production => {
@@ -109,6 +111,13 @@ impl BitnobClient {
         mode: ProviderMode,
         base_url: Option<String>,
     ) -> Self {
+        let normalized_id = client_id
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let normalized_secret = client_secret
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         let default_url = OFFICIAL_BITNOB_BASE_URL.to_string();
         let final_base_url = match base_url {
             Some(url) => {
@@ -136,8 +145,8 @@ impl BitnobClient {
             .unwrap_or_default();
 
         Self {
-            client_id,
-            client_secret,
+            client_id: normalized_id,
+            client_secret: normalized_secret,
             base_url: final_base_url,
             mode,
             http_client,
@@ -256,22 +265,61 @@ impl BitnobClient {
                 "Bitnob upstream returned error status"
             );
 
-            // Sanitize error string: never leak raw response body
-            let sanitized_msg = match status {
-                StatusCode::UNAUTHORIZED => "Bitnob authentication failed".to_string(),
+            // Map HTTP status codes to differentiated ProviderError types without leaking auth material
+            match status {
+                StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
+                    let safe_detail = if error_detail.trim().is_empty() {
+                        "Bitnob rejected the request (validation failed)".to_string()
+                    } else {
+                        error_detail
+                    };
+                    return Err(ProviderError::ValidationFailed(safe_detail));
+                }
+                StatusCode::CONFLICT => {
+                    let safe_detail = if error_detail.trim().is_empty() {
+                        "Bitnob request conflict".to_string()
+                    } else {
+                        format!("Bitnob conflict: {error_detail}")
+                    };
+                    return Err(ProviderError::ValidationFailed(safe_detail));
+                }
+                StatusCode::UNAUTHORIZED => {
+                    return Err(ProviderError::Unavailable(
+                        "Bitnob authentication failed".to_string(),
+                    ));
+                }
                 StatusCode::FORBIDDEN => {
                     if error_detail.contains("IP address not whitelisted") {
-                        "Bitnob access forbidden (IP address not whitelisted)".to_string()
+                        return Err(ProviderError::Unavailable(
+                            "Bitnob access forbidden (IP address not whitelisted)".to_string(),
+                        ));
                     } else {
-                        "Bitnob access forbidden".to_string()
+                        return Err(ProviderError::Unavailable(
+                            "Bitnob access forbidden".to_string(),
+                        ));
                     }
                 }
-                StatusCode::TOO_MANY_REQUESTS => "Bitnob rate limit exceeded".to_string(),
-                s if s.is_server_error() => "Bitnob provider unavailable".to_string(),
-                _ => format!("Bitnob HTTP error {status}"),
-            };
-
-            return Err(ProviderError::Unavailable(sanitized_msg));
+                StatusCode::NOT_FOUND => {
+                    return Err(ProviderError::Unavailable(
+                        "Bitnob endpoint not found".to_string(),
+                    ));
+                }
+                StatusCode::TOO_MANY_REQUESTS => {
+                    return Err(ProviderError::RateLimit(
+                        "Bitnob rate limit exceeded".to_string(),
+                    ));
+                }
+                s if s.is_server_error() => {
+                    return Err(ProviderError::Unavailable(
+                        "Bitnob provider unavailable".to_string(),
+                    ));
+                }
+                _ => {
+                    return Err(ProviderError::Unavailable(format!(
+                        "Bitnob HTTP error {status}"
+                    )));
+                }
+            }
         }
 
         tracing::info!(
@@ -298,6 +346,39 @@ impl BitnobClient {
 
         serde_json::from_str::<WhoamiResponse>(&body)
             .map_err(|_| ProviderError::Internal("Failed to parse Bitnob whoami response".into()))
+    }
+
+    /// Fetches the real-time indicative exchange rate: `GET /api/exchange-rates?from={from}&to={to}`.
+    /// Official Bitnob endpoint for dedicated exchange rate discovery.
+    pub async fn get_exchange_rate(
+        &self,
+        from: &str,
+        to: &str,
+    ) -> ProviderResult<BitnobExchangeRateData> {
+        let from_clean = from.trim().to_uppercase();
+        let to_clean = to.trim().to_uppercase();
+        let path = format!("/api/exchange-rates?from={from_clean}&to={to_clean}");
+
+        let resp = self.send_signed_request(Method::GET, &path, "").await?;
+        let body = resp.text().await.map_err(|_| {
+            ProviderError::Internal("Failed to read Bitnob exchange-rates response body".into())
+        })?;
+
+        let parsed: BitnobExchangeRateResponse = serde_json::from_str(&body).map_err(|_| {
+            ProviderError::Internal("Failed to parse Bitnob exchange-rates response".to_string())
+        })?;
+
+        let is_ok = parsed.status.unwrap_or(true) && parsed.success.unwrap_or(true);
+        if !is_ok {
+            let msg = parsed
+                .message
+                .unwrap_or_else(|| "Bitnob returned exchange-rates failure status".to_string());
+            return Err(ProviderError::Unavailable(msg));
+        }
+
+        parsed.data.ok_or_else(|| {
+            ProviderError::Unavailable("Missing exchange rate data in response".to_string())
+        })
     }
 
     /// Creates a payout exchange rate quote: `POST /api/payouts/quotes`.
@@ -334,5 +415,43 @@ impl BitnobClient {
         parsed.data.and_then(|d| d.payout).ok_or_else(|| {
             ProviderError::Unavailable("Missing payout quote in response".to_string())
         })
+    }
+}
+
+/// Classifies a ProviderError into a standardized diagnostic classification string.
+pub fn classify_error(err: &ProviderError) -> &'static str {
+    match err {
+        ProviderError::ValidationFailed(msg) => {
+            if msg.to_lowercase().contains("conflict") {
+                "PROVIDER_CONFLICT"
+            } else {
+                "REQUEST_VALIDATION_FAILED"
+            }
+        }
+        ProviderError::RateLimit(_) => "RATE_LIMITED",
+        ProviderError::NotConfigured(_) => "MISSING_CREDENTIALS",
+        ProviderError::Internal(msg) => {
+            if msg.contains("parse") || msg.contains("JSON") {
+                "MALFORMED_RESPONSE"
+            } else {
+                "INTERNAL_ERROR"
+            }
+        }
+        ProviderError::Unavailable(msg) => {
+            if msg.contains("IP address not whitelisted") {
+                "IP_NOT_WHITELISTED"
+            } else if msg.contains("authentication failed") {
+                "AUTHENTICATION_FAILED"
+            } else if msg.contains("access forbidden") {
+                "PROVIDER_FORBIDDEN"
+            } else if msg.contains("endpoint not found") || msg.contains("not found") {
+                "ENDPOINT_NOT_FOUND"
+            } else if msg.contains("network") {
+                "NETWORK_ERROR"
+            } else {
+                "PROVIDER_UNAVAILABLE"
+            }
+        }
+        _ => "PROVIDER_UNAVAILABLE",
     }
 }

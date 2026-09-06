@@ -9,11 +9,13 @@ pub struct BitnobPayoutQuoteRequest {
     pub country: String,
     pub source: String,
     pub amount: String,
+    pub reference: String,
 }
 
 impl BitnobPayoutQuoteRequest {
     /// Constructs a standard indicative rate quote request for Hanbova.
     /// Uses `source = "offchain"` as required by the official API.
+    /// Generates a unique reference for idempotency and tracking.
     pub fn new_indicative(market: &str, from_asset: &str, to_currency: &str) -> Self {
         Self {
             from_asset: from_asset.trim().to_uppercase(),
@@ -21,6 +23,7 @@ impl BitnobPayoutQuoteRequest {
             country: market.trim().to_uppercase(),
             source: "offchain".to_string(),
             amount: "1".to_string(),
+            reference: format!("HANBOVA_RATE_{}", uuid::Uuid::new_v4()),
         }
     }
 }
@@ -87,6 +90,46 @@ pub struct BitnobQuoteResponse {
     pub message: Option<String>,
 }
 
+/// Dedicated exchange rate payload returned by `GET /api/exchange-rates`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BitnobExchangeRateData {
+    pub base_currency: Option<String>,
+    pub target_currency: Option<String>,
+    pub buy_rate: Option<String>,
+    pub sell_rate: Option<String>,
+    pub mid_rate: Option<String>,
+    pub inverse_rate: Option<String>,
+    pub valid_for_seconds: Option<u64>,
+    pub percent_change_24h: Option<String>,
+    pub timestamp: Option<String>,
+}
+
+impl BitnobExchangeRateData {
+    /// Safely parses the indicative numeric exchange rate from mid_rate or buy_rate.
+    pub fn parse_rate(&self) -> Option<f64> {
+        self.mid_rate
+            .as_ref()
+            .or(self.buy_rate.as_ref())
+            .and_then(|r| {
+                let clean = r.replace(',', "");
+                clean.trim().parse::<f64>().ok()
+            })
+            .filter(|r| r.is_finite() && *r > 0.0)
+    }
+}
+
+/// Root response structure for `GET /api/exchange-rates`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BitnobExchangeRateResponse {
+    #[serde(default)]
+    pub status: Option<bool>,
+    #[serde(default)]
+    pub success: Option<bool>,
+    pub data: Option<BitnobExchangeRateData>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
 /// Response structure for `GET /api/whoami`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct WhoamiResponse {
@@ -94,7 +137,6 @@ pub struct WhoamiResponse {
     pub status: Option<bool>,
     #[serde(default)]
     pub success: Option<bool>,
-    #[serde(default)]
     pub data: Option<serde_json::Value>,
     #[serde(default)]
     pub message: Option<String>,
@@ -132,6 +174,40 @@ mod tests {
         assert!(json_str.contains(r#""country":"NG""#));
         assert!(json_str.contains(r#""source":"offchain""#));
         assert!(json_str.contains(r#""amount":"1""#));
+        assert!(json_str.contains(r#""reference":"HANBOVA_RATE_"#));
+
+        // Two generated requests must not have the same reference
+        let req2 = BitnobPayoutQuoteRequest::new_indicative("NG", "USDT", "NGN");
+        assert_ne!(
+            req.reference, req2.reference,
+            "Reference must be unique per request"
+        );
+    }
+
+    #[test]
+    fn test_exchange_rate_data_deserialization() {
+        let json_data = r#"{
+            "success": true,
+            "message": "Exchange rate retrieved",
+            "data": {
+                "base_currency": "USD",
+                "target_currency": "NGN",
+                "buy_rate": "1388.52644587",
+                "sell_rate": "1374.71306400",
+                "mid_rate": "1381.61975494",
+                "inverse_rate": "0.00072742",
+                "timestamp": "2026-06-18T15:29:17Z",
+                "valid_for_seconds": 300,
+                "percent_change_24h": "0.00"
+            }
+        }"#;
+
+        let resp: BitnobExchangeRateResponse = serde_json::from_str(json_data).unwrap();
+        assert_eq!(resp.success, Some(true));
+        let data = resp.data.unwrap();
+        assert_eq!(data.base_currency.as_deref(), Some("USD"));
+        assert_eq!(data.target_currency.as_deref(), Some("NGN"));
+        assert_eq!(data.parse_rate(), Some(1381.61975494));
     }
 
     #[test]
