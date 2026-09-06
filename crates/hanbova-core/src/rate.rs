@@ -38,6 +38,8 @@ pub struct HanbovaRate {
     pub rate: f64,
     /// Provider identifier (e.g., "bitnob")
     pub provider: String,
+    /// Execution/rate environment (e.g., "mock", "sandbox", "production")
+    pub environment: String,
     /// Whether this is a verified live rate from the provider
     pub is_live: bool,
     /// Whether this rate is currently stale (provider temporarily unreachable)
@@ -51,6 +53,12 @@ pub struct HanbovaRate {
 impl HanbovaRate {
     /// Formats a USD/NGN rate into the standard customer-facing display string.
     pub fn format_display(base: &str, quote: &str, rate: f64) -> String {
+        // USD/USDT quote: avoid meaningless "$1 = USD 1.00".
+        // Instead show "1 USDT = $X.XX".
+        if quote == "USD" || quote == "USDT" {
+            return format!("1 USDT = ${}", format_number_with_commas(rate));
+        }
+
         let base_symbol = match base {
             "USD" => "$1",
             "EUR" => "€1",
@@ -58,16 +66,15 @@ impl HanbovaRate {
             _ => base,
         };
 
-        let quote_formatted = if quote == "NGN" {
-            format!("₦{}", format_number_with_commas(rate))
-        } else if quote == "KES" {
-            format!("KSh {}", format_number_with_commas(rate))
-        } else if quote == "GHS" {
-            format!("GH₵ {}", format_number_with_commas(rate))
-        } else if quote == "ZAR" {
-            format!("R {}", format_number_with_commas(rate))
-        } else {
-            format!("{quote} {:.2}", rate)
+        let quote_formatted = match quote {
+            "NGN" => format!("\u{20a6}{}", format_number_with_commas(rate)),
+            "KES" => format!("KSh {}", format_number_with_commas(rate)),
+            "GHS" => format!("GH\u{20b5} {}", format_number_with_commas(rate)),
+            "ZAR" => format!("R {}", format_number_with_commas(rate)),
+            "UGX" => format!("USh {}", format_number_with_commas(rate)),
+            "RWF" => format!("RWF {}", format_number_with_commas(rate)),
+            "TZS" => format!("TSh {}", format_number_with_commas(rate)),
+            _ => format!("{quote} {:.2}", rate),
         };
 
         format!("{base_symbol} = {quote_formatted}")
@@ -82,6 +89,7 @@ impl HanbovaRate {
         settlement_asset: impl Into<String>,
         rate: f64,
         provider: impl Into<String>,
+        environment: impl Into<String>,
         is_live: bool,
         is_stale: bool,
         updated_at: DateTime<Utc>,
@@ -99,6 +107,7 @@ impl HanbovaRate {
             settlement_asset: settlement_asset.into(),
             rate,
             provider: provider.into(),
+            environment: environment.into(),
             is_live,
             is_stale,
             updated_at,
@@ -111,7 +120,7 @@ impl HanbovaRate {
     /// NOTE: Mock rates are NEVER marked `is_live: true`.
     pub fn mock_ngn(rate: f64, updated_at: DateTime<Utc>) -> Self {
         Self::new(
-            "NG", "USD", "NGN", "USDT", rate, "bitnob", false, // is_live: FALSE
+            "NG", "USD", "NGN", "USDT", rate, "bitnob", "mock", false, // is_live: FALSE
             false, // is_stale: false
             updated_at, None,
         )
@@ -147,16 +156,26 @@ mod tests {
     fn test_format_display() {
         assert_eq!(
             HanbovaRate::format_display("USD", "NGN", 1365.0),
-            "$1 = ₦1,365.00"
+            "$1 = \u{20a6}1,365.00"
         );
         assert_eq!(
             HanbovaRate::format_display("USD", "NGN", 1520.50),
-            "$1 = ₦1,520.50"
+            "$1 = \u{20a6}1,520.50"
         );
         assert_eq!(
             HanbovaRate::format_display("USD", "KES", 130.25),
             "$1 = KSh 130.25"
         );
+        assert_eq!(
+            HanbovaRate::format_display("USD", "UGX", 3750.0),
+            "$1 = USh 3,750.00"
+        );
+        assert_eq!(
+            HanbovaRate::format_display("USD", "TZS", 2680.0),
+            "$1 = TSh 2,680.00"
+        );
+        // USD market: must NOT be "$1 = USD 1.00"
+        assert!(!HanbovaRate::format_display("USD", "USD", 1.0).contains("$1 = USD"));
     }
 
     #[test]
@@ -164,6 +183,7 @@ mod tests {
         let rate = HanbovaRate::mock_ngn(1365.0, Utc::now());
         assert!(!rate.is_live);
         assert!(!rate.is_stale);
+        assert_eq!(rate.environment, "mock");
         assert_eq!(rate.market, "NG");
         assert_eq!(rate.base, "USD");
         assert_eq!(rate.quote, "NGN");

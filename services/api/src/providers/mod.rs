@@ -8,7 +8,7 @@ pub mod bitnob;
 pub mod dtone;
 pub mod rates;
 
-pub use rates::{BitnobRateProvider, MockRateProvider, PlatformRateProvider};
+pub use rates::{BitnobRateProvider, MockRateProvider, PlatformRateProvider, ALL_MARKETS};
 
 #[derive(Debug, Error, Clone, Serialize, Deserialize)]
 pub enum ProviderError {

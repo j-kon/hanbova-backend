@@ -30,10 +30,11 @@ async fn test_bitnob_mock_environment_returns_truthful_non_live_rate() {
         .expect("rate fetch");
 
     assert_eq!(rate.market, "NG");
-    assert_eq!(rate.rate, 1365.0);
+    assert_eq!(rate.rate, 1565.0);
+    assert_eq!(rate.environment, "mock");
     assert!(!rate.is_live, "Bitnob in mock mode must NOT claim is_live");
     assert!(!rate.is_stale);
-    assert_eq!(rate.display, "$1 = ₦1,365.00");
+    assert_eq!(rate.display, "$1 = \u{20a6}1,565.00");
 }
 
 #[tokio::test]
@@ -53,6 +54,22 @@ async fn test_production_provider_failure_never_silently_falls_back_to_mock() {
     assert!(
         service_result.is_err(),
         "Production service failure must never silently return mock data"
+    );
+}
+
+#[tokio::test]
+async fn test_sandbox_provider_failure_never_silently_falls_back_to_mock() {
+    // A sandbox provider without credentials or when connection fails
+    // must strictly error, not silently fall back to mock rate
+    let sandbox_provider = BitnobRateProvider::with_config(None, None, "sandbox", None);
+    let result = sandbox_provider.get_rate("NG", "USDT", "NGN").await;
+    assert!(result.is_err(), "Sandbox mode must fail when unconfigured");
+
+    let service = hanbova_api::services::HanbovaRateService::new(Arc::new(sandbox_provider));
+    let service_result = service.get_rate("NG", "USDT", "NGN").await;
+    assert!(
+        service_result.is_err(),
+        "Sandbox service failure must never silently return mock data"
     );
 }
 
@@ -151,6 +168,7 @@ fn test_secrets_never_appear_in_serialization() {
         "USDT",
         1365.0,
         "bitnob",
+        "production",
         true,
         false,
         Utc::now(),
@@ -164,8 +182,51 @@ fn test_secrets_never_appear_in_serialization() {
     assert!(!serialized.contains("signature"));
     assert!(serialized.contains(r#""display":"$1 = ₦1,365.00""#));
     assert!(serialized.contains(r#""rate":1365.0"#));
+    assert!(serialized.contains(r#""environment":"production""#));
     assert!(serialized.contains(r#""is_live":true"#));
     assert!(serialized.contains(r#""is_stale":false"#));
+}
+
+#[test]
+fn test_environment_is_correctly_serialized() {
+    let mock_rate = HanbovaRate::mock_ngn(1365.0, Utc::now());
+    let mock_json = serde_json::to_value(&mock_rate).unwrap();
+    assert_eq!(mock_json["environment"], "mock");
+    assert_eq!(mock_json["is_live"], false);
+
+    let sandbox_rate = HanbovaRate::new(
+        "NG",
+        "USD",
+        "NGN",
+        "USDT",
+        1365.0,
+        "bitnob",
+        "sandbox",
+        false,
+        false,
+        Utc::now(),
+        None,
+    );
+    let sandbox_json = serde_json::to_value(&sandbox_rate).unwrap();
+    assert_eq!(sandbox_json["environment"], "sandbox");
+    assert_eq!(sandbox_json["is_live"], false); // Sandbox is explicitly NOT live
+
+    let prod_rate = HanbovaRate::new(
+        "NG",
+        "USD",
+        "NGN",
+        "USDT",
+        1365.0,
+        "bitnob",
+        "production",
+        true,
+        false,
+        Utc::now(),
+        None,
+    );
+    let prod_json = serde_json::to_value(&prod_rate).unwrap();
+    assert_eq!(prod_json["environment"], "production");
+    assert_eq!(prod_json["is_live"], true);
 }
 
 #[tokio::test]
@@ -200,8 +261,10 @@ async fn test_api_endpoint_get_hanbova_rate_success() {
     assert_eq!(json["base"], "USD");
     assert_eq!(json["quote"], "NGN");
     assert_eq!(json["settlement_asset"], "USDT");
-    assert_eq!(json["display"], "$1 = ₦1,365.00");
-    assert_eq!(json["rate"], 1365.0);
+    assert_eq!(json["display"], "$1 = \u{20a6}1,565.00");
+    assert_eq!(json["rate"], 1565.0);
+    assert_eq!(json["provider"], "bitnob");
+    assert_eq!(json["environment"], "mock");
     assert_eq!(json["is_stale"], false);
     // Development default is mock mode, so is_live is false
     assert_eq!(json["is_live"], false);

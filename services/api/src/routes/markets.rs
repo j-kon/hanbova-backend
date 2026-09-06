@@ -139,6 +139,48 @@ async fn list_markets() -> impl IntoResponse {
                 esim: true,
             },
         },
+        MarketInfo {
+            country: "TZ".to_string(),
+            name: "Tanzania".to_string(),
+            flag_emoji: "🇹🇿".to_string(),
+            currency: "TZS".to_string(),
+            dial_code: "+255".to_string(),
+            environment: "sandbox".to_string(),
+            source: "mock".to_string(),
+            capabilities: MarketCapabilities {
+                payouts: true,
+                mobile_money: true,
+                cards: true,
+                airtime: true,
+                data: true,
+                electricity: true,
+                water: true,
+                tv: false,
+                internet: false,
+                esim: true,
+            },
+        },
+        MarketInfo {
+            country: "US".to_string(),
+            name: "Global (USD)".to_string(),
+            flag_emoji: "🌐".to_string(),
+            currency: "USD".to_string(),
+            dial_code: "+1".to_string(),
+            environment: "sandbox".to_string(),
+            source: "mock".to_string(),
+            capabilities: MarketCapabilities {
+                payouts: true,
+                mobile_money: false,
+                cards: true,
+                airtime: false,
+                data: false,
+                electricity: false,
+                water: false,
+                tv: false,
+                internet: false,
+                esim: true,
+            },
+        },
     ];
 
     (StatusCode::OK, Json(markets))
@@ -280,6 +322,52 @@ async fn get_market_capabilities(Path(country): Path<String>) -> impl IntoRespon
                     "electricity": true,
                     "water": true,
                     "tv": true,
+                    "internet": false,
+                    "esim": true
+                }
+            })),
+        ),
+        "TZ" => (
+            StatusCode::OK,
+            Json(json!({
+                "country": "TZ",
+                "name": "Tanzania",
+                "currency": "TZS",
+                "flag_emoji": "🇹🇿",
+                "environment": "sandbox",
+                "source": "mock",
+                "capabilities": {
+                    "payouts": true,
+                    "mobile_money": true,
+                    "cards": true,
+                    "airtime": true,
+                    "data": true,
+                    "electricity": true,
+                    "water": true,
+                    "tv": false,
+                    "internet": false,
+                    "esim": true
+                }
+            })),
+        ),
+        "US" => (
+            StatusCode::OK,
+            Json(json!({
+                "country": "US",
+                "name": "Global (USD)",
+                "currency": "USD",
+                "flag_emoji": "🌐",
+                "environment": "sandbox",
+                "source": "mock",
+                "capabilities": {
+                    "payouts": true,
+                    "mobile_money": false,
+                    "cards": true,
+                    "airtime": false,
+                    "data": false,
+                    "electricity": false,
+                    "water": false,
+                    "tv": false,
                     "internet": false,
                     "esim": true
                 }

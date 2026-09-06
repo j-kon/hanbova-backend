@@ -1,9 +1,10 @@
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use futures::future::join_all;
 use hanbova_core::rate::HanbovaRate;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 
-use crate::providers::{PlatformRateProvider, ProviderError, ProviderResult};
+use crate::providers::{PlatformRateProvider, ProviderError, ProviderResult, ALL_MARKETS};
 
 #[derive(Debug, Clone)]
 struct CachedRateEntry {
@@ -129,6 +130,90 @@ impl HanbovaRateService {
                 ))
             }
         }
+    }
+
+    /// Fetches all known Hanbova market rates concurrently.
+    ///
+    /// Each market is fetched independently. A market-level failure falls back
+    /// to the stale cache entry if one exists; otherwise that slot returns `None`.
+    /// This means a single market being down never poisons the entire response.
+    pub async fn get_all_rates(&self) -> Vec<Option<HanbovaRate>> {
+        let now = Utc::now();
+        let fresh_duration =
+            ChronoDuration::from_std(self.fresh_ttl).unwrap_or(ChronoDuration::seconds(45));
+        let stale_duration =
+            ChronoDuration::from_std(self.stale_ttl).unwrap_or(ChronoDuration::seconds(600));
+
+        // Identify which markets still need a fresh fetch
+        let markets_to_fetch: Vec<_> = {
+            let cache = self.cache.read().await;
+            ALL_MARKETS
+                .iter()
+                .filter(|(market, asset, currency)| {
+                    let key = (
+                        market.to_uppercase(),
+                        asset.to_uppercase(),
+                        currency.to_uppercase(),
+                    );
+                    cache
+                        .get(&key)
+                        .map(|e| now.signed_duration_since(e.cached_at) >= fresh_duration)
+                        .unwrap_or(true)
+                })
+                .copied()
+                .collect()
+        };
+
+        // Fan out fetches concurrently for stale/missing markets
+        let fetches = markets_to_fetch.iter().map(|(market, asset, currency)| {
+            let key = (
+                market.to_uppercase(),
+                asset.to_uppercase(),
+                currency.to_uppercase(),
+            );
+            let provider = Arc::clone(&self.provider);
+            async move { (key, provider.get_rate(market, asset, currency).await) }
+        });
+        let fetch_results: Vec<_> = join_all(fetches).await;
+
+        // Write successful fetches back to the cache
+        {
+            let mut cache = self.cache.write().await;
+            for (key, result) in &fetch_results {
+                if let Ok(rate) = result {
+                    cache.insert(
+                        key.clone(),
+                        CachedRateEntry {
+                            rate: rate.clone(),
+                            cached_at: now,
+                        },
+                    );
+                }
+            }
+        }
+
+        // Build the final list in canonical ALL_MARKETS order
+        let cache = self.cache.read().await;
+        ALL_MARKETS
+            .iter()
+            .map(|(market, asset, currency)| {
+                let key = (
+                    market.to_uppercase(),
+                    asset.to_uppercase(),
+                    currency.to_uppercase(),
+                );
+                cache.get(&key).and_then(|entry| {
+                    let age = now.signed_duration_since(entry.cached_at);
+                    if age < stale_duration {
+                        let mut rate = entry.rate.clone();
+                        rate.is_stale = age >= fresh_duration;
+                        Some(rate)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect()
     }
 }
 

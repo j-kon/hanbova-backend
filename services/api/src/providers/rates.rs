@@ -13,6 +13,18 @@ use super::{ProviderError, ProviderResult};
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// All supported Hanbova markets with their settlement currency.
+pub const ALL_MARKETS: &[(&str, &str, &str)] = &[
+    ("NG", "USDT", "NGN"),
+    ("KE", "USDT", "KES"),
+    ("GH", "USDT", "GHS"),
+    ("ZA", "USDT", "ZAR"),
+    ("UG", "USDT", "UGX"),
+    ("RW", "USDT", "RWF"),
+    ("TZ", "USDT", "TZS"),
+    ("US", "USDT", "USD"),
+];
+
 /// Provider-neutral abstraction for retrieving live indicative platform rates.
 #[async_trait]
 pub trait PlatformRateProvider: Send + Sync {
@@ -23,6 +35,19 @@ pub trait PlatformRateProvider: Send + Sync {
         settlement_asset: &str,
         target_currency: &str,
     ) -> ProviderResult<HanbovaRate>;
+
+    /// Retrieve rates for all known Hanbova markets concurrently.
+    /// Default implementation fans out to `get_rate` for each market.
+    /// Individual market failures return `None` for that slot — they never
+    /// poison the overall response.
+    async fn get_all_rates(&self) -> Vec<Option<HanbovaRate>> {
+        let mut results = Vec::with_capacity(ALL_MARKETS.len());
+        for (market, asset, currency) in ALL_MARKETS {
+            let result = self.get_rate(market, asset, currency).await.ok();
+            results.push(result);
+        }
+        results
+    }
 
     /// Short identifier for the provider (e.g., "bitnob", "flutterwave", "mock").
     fn provider_id(&self) -> &'static str;
@@ -175,12 +200,19 @@ impl PlatformRateProvider for BitnobRateProvider {
 
         // 1. Explicit mock mode returns deterministic rate (NEVER marked live)
         if self.environment == "mock" {
+            // USD→USD is meaningless; instead express as 1 USDT = $1.00 (tether peg)
+            // Rates are indicative mock values only.
             let mock_rate = match (asset_upper.as_str(), currency_upper.as_str()) {
-                ("USDT", "NGN") | ("USD", "NGN") => 1365.00,
+                ("USDT", "NGN") | ("USD", "NGN") => 1_565.00,
                 ("USDT", "KES") | ("USD", "KES") => 132.50,
                 ("USDT", "GHS") | ("USD", "GHS") => 15.40,
                 ("USDT", "ZAR") | ("USD", "ZAR") => 18.20,
-                _ => 1365.00,
+                ("USDT", "UGX") | ("USD", "UGX") => 3_750.00,
+                ("USDT", "RWF") | ("USD", "RWF") => 1_310.00,
+                ("USDT", "TZS") | ("USD", "TZS") => 2_680.00,
+                // USD market: 1 USDT ≈ $1.00 (tether peg)
+                ("USDT", "USD") | ("USD", "USD") => 1.00,
+                _ => 1_565.00,
             };
 
             return Ok(HanbovaRate::new(
@@ -190,6 +222,7 @@ impl PlatformRateProvider for BitnobRateProvider {
                 asset_upper,
                 mock_rate,
                 "bitnob",
+                "mock",
                 false, // is_live = false for mock
                 false, // is_stale = false
                 Utc::now(),
@@ -205,9 +238,14 @@ impl PlatformRateProvider for BitnobRateProvider {
                     return Err(ProviderError::NotConfigured(
                         "Bitnob API credentials missing in production".to_string(),
                     ));
-                } else if let Some(key) = &self.api_key {
-                    // Legacy API key fallback in sandbox only
-                    (key.as_str(), "")
+                } else if self.environment == "sandbox" {
+                    if let Some(key) = &self.api_key {
+                        (key.as_str(), "")
+                    } else {
+                        return Err(ProviderError::NotConfigured(
+                            "Bitnob credentials not configured in sandbox".to_string(),
+                        ));
+                    }
                 } else {
                     return Err(ProviderError::NotConfigured(
                         "Bitnob credentials not configured".to_string(),
@@ -277,6 +315,8 @@ impl PlatformRateProvider for BitnobRateProvider {
                 .or_else(|| d.exchange_rate.as_ref().and_then(|er| er.rate))
         });
 
+        let is_live = self.environment == "production";
+
         match extracted_rate {
             Some(rate) if rate > 0.0 => Ok(HanbovaRate::new(
                 market_upper,
@@ -285,8 +325,9 @@ impl PlatformRateProvider for BitnobRateProvider {
                 asset_upper,
                 rate,
                 "bitnob",
-                true,  // is_live = true for verified provider quote
-                false, // is_stale = false
+                &self.environment,
+                is_live, // true ONLY for verified production provider quote, NEVER sandbox
+                false,   // is_stale = false
                 Utc::now(),
                 None,
             )),
@@ -346,6 +387,7 @@ impl PlatformRateProvider for MockRateProvider {
             settlement_asset,
             self.rate,
             "mock",
+            "mock",
             false, // mock is never live
             false,
             Utc::now(),
@@ -390,7 +432,7 @@ mod tests {
         assert_eq!(rate.market, "NG");
         assert_eq!(rate.quote, "NGN");
         assert_eq!(rate.settlement_asset, "USDT");
-        assert_eq!(rate.rate, 1365.0);
+        assert_eq!(rate.rate, 1565.0);
         assert!(!rate.is_live, "Mock rate must NOT be live");
         assert!(!rate.is_stale);
     }
@@ -398,6 +440,17 @@ mod tests {
     #[tokio::test]
     async fn test_production_without_credentials_fails() {
         let provider = BitnobRateProvider::with_config(None, None, "production", None);
+        let result = provider.get_rate("NG", "USDT", "NGN").await;
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            ProviderError::NotConfigured(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_sandbox_without_credentials_fails() {
+        let provider = BitnobRateProvider::with_config(None, None, "sandbox", None);
         let result = provider.get_rate("NG", "USDT", "NGN").await;
         assert!(result.is_err());
         assert!(matches!(
