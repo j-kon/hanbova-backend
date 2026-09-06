@@ -2,12 +2,15 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::post,
+    routing::{get, post},
     Router,
 };
 use hanbova_api::{
     config::ProviderMode,
-    providers::{BitnobRateProvider, PlatformRateProvider, ProviderError},
+    providers::{
+        bitnob::{auth::generate_signature, BitnobClient},
+        BitnobRateProvider, PlatformRateProvider, ProviderError,
+    },
     services::HanbovaRateService,
 };
 use serde_json::json;
@@ -27,21 +30,17 @@ struct MockServerState {
 // Response modes for mock server
 const MODE_SUCCESS_NUMERIC: usize = 0;
 const MODE_SUCCESS_STRING: usize = 1;
-const MODE_SUCCESS_NESTED_QUOTE: usize = 2;
-const MODE_HTTP_401_UNAUTHORIZED: usize = 3;
+const MODE_HTTP_401_UNAUTHORIZED: usize = 2;
+const MODE_HTTP_403_FORBIDDEN: usize = 3;
 const MODE_HTTP_500_SERVER_ERROR: usize = 4;
 const MODE_MALFORMED_JSON: usize = 5;
 const MODE_ZERO_RATE: usize = 6;
 const MODE_NEGATIVE_RATE: usize = 7;
 const MODE_MISSING_RATE: usize = 8;
 const MODE_STATUS_FALSE: usize = 9;
+const MODE_WRONG_CORRIDOR: usize = 10;
 
-async fn mock_payout_quotes_handler(
-    State(state): State<MockServerState>,
-    headers: HeaderMap,
-    body: String,
-) -> impl IntoResponse {
-    // Verify required Bitnob authentication headers are present
+fn verify_auth_headers(headers: &HeaderMap) {
     assert!(
         headers.contains_key("x-auth-client"),
         "Missing X-Auth-Client header"
@@ -58,16 +57,92 @@ async fn mock_payout_quotes_handler(
         headers.contains_key("x-auth-signature"),
         "Missing X-Auth-Signature header"
     );
+
+    // Verify timestamp is numeric and plausible (epoch seconds > Nov 2023)
+    let ts: u64 = headers
+        .get("x-auth-timestamp")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .parse()
+        .expect("Timestamp must be a valid numeric unix epoch");
+    assert!(
+        ts > 1_700_000_000,
+        "Timestamp must be plausible epoch seconds"
+    );
+
+    // Verify nonce is 32 hex characters (16 bytes)
+    let nonce = headers.get("x-auth-nonce").unwrap().to_str().unwrap();
+    assert_eq!(nonce.len(), 32, "Nonce must be 32 hex chars");
+}
+
+async fn mock_whoami_handler(
+    State(state): State<MockServerState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    verify_auth_headers(&headers);
+
+    match state.response_mode.load(Ordering::SeqCst) {
+        MODE_HTTP_401_UNAUTHORIZED => (
+            StatusCode::UNAUTHORIZED,
+            [("content-type", "application/json")],
+            json!({
+                "type": "https://api.bitnob.com/errors/UNAUTHORIZED",
+                "title": "Unauthorized",
+                "status": 401,
+                "detail": "Authentication failed"
+            })
+            .to_string(),
+        ),
+        MODE_HTTP_403_FORBIDDEN => (
+            StatusCode::FORBIDDEN,
+            [("content-type", "application/json")],
+            json!({
+                "type": "https://api.bitnob.com/errors/FORBIDDEN",
+                "title": "Forbidden",
+                "status": 403,
+                "detail": "IP address not whitelisted"
+            })
+            .to_string(),
+        ),
+        _ => (
+            StatusCode::OK,
+            [("content-type", "application/json")],
+            json!({
+                "status": true,
+                "message": "Authenticated",
+                "data": {
+                    "clientId": "client-id-123",
+                    "organization": "Hanbova Pilot"
+                }
+            })
+            .to_string(),
+        ),
+    }
+}
+
+async fn mock_payout_quotes_handler(
+    State(state): State<MockServerState>,
+    headers: HeaderMap,
+    body: String,
+) -> impl IntoResponse {
+    verify_auth_headers(&headers);
     assert_eq!(
         headers.get("content-type").unwrap().to_str().unwrap(),
         "application/json"
     );
 
-    // Verify body is valid JSON payload
+    // Verify body matches official Bitnob payout quote schema exactly
     let req_json: serde_json::Value =
         serde_json::from_str(&body).expect("Valid JSON payload expected");
     assert_eq!(req_json["from_asset"], "USDT");
     assert_eq!(req_json["to_currency"], "NGN");
+    assert_eq!(req_json["country"], "NG");
+    assert_eq!(
+        req_json["source"], "offchain",
+        "Official Bitnob quote must send source = offchain"
+    );
+    assert_eq!(req_json["amount"], "1");
 
     match state.response_mode.load(Ordering::SeqCst) {
         MODE_SUCCESS_NUMERIC => (
@@ -83,7 +158,6 @@ async fn mock_payout_quotes_handler(
                         "from_asset": "USDT",
                         "to_currency": "NGN",
                         "amount": "1",
-                        "settlement_amount": "1620.50",
                         "exchange_rate": {
                             "rate": 1620.50,
                             "currency": "ngn"
@@ -100,23 +174,15 @@ async fn mock_payout_quotes_handler(
                 "status": true,
                 "message": "Quote created successfully",
                 "data": {
-                    "exchange_rate": {
-                        "rate": "1625.75",
-                        "currency": "ngn"
-                    }
-                }
-            })
-            .to_string(),
-        ),
-        MODE_SUCCESS_NESTED_QUOTE => (
-            StatusCode::OK,
-            [("content-type", "application/json")],
-            json!({
-                "success": true,
-                "data": {
-                    "quote": {
+                    "payout": {
+                        "id": "quote-12346",
+                        "status": "QUOTE",
+                        "from_asset": "USDT",
+                        "to_currency": "NGN",
+                        "amount": "1",
                         "exchange_rate": {
-                            "rate": "1630.00"
+                            "rate": "1,625.75",
+                            "currency": "ngn"
                         }
                     }
                 }
@@ -127,8 +193,23 @@ async fn mock_payout_quotes_handler(
             StatusCode::UNAUTHORIZED,
             [("content-type", "application/json")],
             json!({
-                "status": false,
-                "message": "Invalid API Key or Signature"
+                "type": "https://api.bitnob.com/errors/UNAUTHORIZED",
+                "title": "Unauthorized",
+                "status": 401,
+                "detail": "Authentication failed",
+                "correlation_id": "req-auth-fail"
+            })
+            .to_string(),
+        ),
+        MODE_HTTP_403_FORBIDDEN => (
+            StatusCode::FORBIDDEN,
+            [("content-type", "application/json")],
+            json!({
+                "type": "https://api.bitnob.com/errors/FORBIDDEN",
+                "title": "Forbidden",
+                "status": 403,
+                "detail": "IP address not whitelisted",
+                "correlation_id": "req-ip-whitelist"
             })
             .to_string(),
         ),
@@ -137,7 +218,7 @@ async fn mock_payout_quotes_handler(
             [("content-type", "application/json")],
             json!({
                 "status": false,
-                "message": "Internal service error"
+                "message": "Internal provider failure"
             })
             .to_string(),
         ),
@@ -152,7 +233,13 @@ async fn mock_payout_quotes_handler(
             json!({
                 "status": true,
                 "data": {
-                    "rate": 0.0
+                    "payout": {
+                        "from_asset": "USDT",
+                        "to_currency": "NGN",
+                        "exchange_rate": {
+                            "rate": 0.0
+                        }
+                    }
                 }
             })
             .to_string(),
@@ -163,7 +250,13 @@ async fn mock_payout_quotes_handler(
             json!({
                 "status": true,
                 "data": {
-                    "rate": -1550.0
+                    "payout": {
+                        "from_asset": "USDT",
+                        "to_currency": "NGN",
+                        "exchange_rate": {
+                            "rate": -1550.0
+                        }
+                    }
                 }
             })
             .to_string(),
@@ -175,7 +268,9 @@ async fn mock_payout_quotes_handler(
                 "status": true,
                 "data": {
                     "payout": {
-                        "id": "123"
+                        "id": "123",
+                        "from_asset": "USDT",
+                        "to_currency": "NGN"
                     }
                 }
             })
@@ -187,6 +282,23 @@ async fn mock_payout_quotes_handler(
             json!({
                 "status": false,
                 "message": "Quote expired"
+            })
+            .to_string(),
+        ),
+        MODE_WRONG_CORRIDOR => (
+            StatusCode::OK,
+            [("content-type", "application/json")],
+            json!({
+                "status": true,
+                "data": {
+                    "payout": {
+                        "from_asset": "BTC",
+                        "to_currency": "NGN",
+                        "exchange_rate": {
+                            "rate": 95_000_000.0
+                        }
+                    }
+                }
             })
             .to_string(),
         ),
@@ -205,7 +317,8 @@ async fn start_mock_server() -> (String, Arc<AtomicUsize>) {
     };
 
     let app = Router::new()
-        .route("/api/v1/payouts/quotes", post(mock_payout_quotes_handler))
+        .route("/api/whoami", get(mock_whoami_handler))
+        .route("/api/payouts/quotes", post(mock_payout_quotes_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -219,6 +332,26 @@ async fn start_mock_server() -> (String, Arc<AtomicUsize>) {
     });
 
     (base_url, response_mode)
+}
+
+// 0. Deterministic HMAC unit test with known inputs and expected signature
+#[test]
+fn test_exact_hmac_deterministic_vector() {
+    let client_id = "test-client-id-12345";
+    let client_secret = "test-secret-abcdef-67890";
+    let timestamp = 1719236465;
+    let nonce = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+    let payload = r#"{"from_asset":"USDT","to_currency":"NGN","country":"NG","source":"offchain","amount":"1"}"#;
+
+    let sig = generate_signature(client_id, client_secret, timestamp, nonce, payload)
+        .expect("signature computation");
+
+    assert_eq!(sig.len(), 64);
+    // Exact expected HMAC-SHA256 hex digest for this fixed canonical string
+    assert_eq!(
+        sig,
+        "13f937ed34d46281c9ea0ed15ef9600d58a249baca91a098d00195412cba1d9f"
+    );
 }
 
 // 1. mock mode remains deterministic and is_live=false
@@ -280,7 +413,7 @@ async fn test_3_sandbox_does_not_fallback_to_mock() {
     assert!(matches!(result.unwrap_err(), ProviderError::Unavailable(_)));
 }
 
-// 4. invalid sandbox provider response fails
+// 4. invalid sandbox provider response fails safely with classified error
 #[tokio::test]
 async fn test_4_invalid_sandbox_provider_response_fails() {
     let (base_url, mode) = start_mock_server().await;
@@ -290,17 +423,26 @@ async fn test_4_invalid_sandbox_provider_response_fails() {
         Some("client-id-123".to_string()),
         Some("client-secret-abc".to_string()),
         ProviderMode::Sandbox,
-        Some(base_url),
+        Some(base_url.clone()),
     );
 
     let result = provider.get_rate("NG", "USDT", "NGN").await;
     assert!(result.is_err());
-    match result.unwrap_err() {
-        ProviderError::Unavailable(msg) => {
-            assert!(msg.contains("401"));
-        }
-        other => panic!("Expected ProviderError::Unavailable, got {other:?}"),
-    }
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("authentication failed"),
+        "Must classify 401 safely"
+    );
+
+    // Test 403 IP whitelist classification
+    mode.store(MODE_HTTP_403_FORBIDDEN, Ordering::SeqCst);
+    let result_403 = provider.get_rate("NG", "USDT", "NGN").await;
+    assert!(result_403.is_err());
+    let err_msg_403 = result_403.unwrap_err().to_string();
+    assert!(
+        err_msg_403.contains("IP address not whitelisted"),
+        "Must identify IP whitelist issue safely"
+    );
 }
 
 // 5. malformed provider JSON fails safely
@@ -320,7 +462,7 @@ async fn test_5_malformed_provider_json_fails_safely() {
     assert!(result.is_err());
     match result.unwrap_err() {
         ProviderError::Internal(msg) => {
-            assert!(msg.contains("Failed to parse Bitnob quote"));
+            assert!(msg.contains("Failed to parse Bitnob quote response"));
         }
         other => panic!("Expected ProviderError::Internal, got {other:?}"),
     }
@@ -357,6 +499,14 @@ async fn test_6_zero_negative_missing_rate_is_rejected() {
     mode.store(MODE_STATUS_FALSE, Ordering::SeqCst);
     let status_false_res = provider.get_rate("NG", "USDT", "NGN").await;
     assert!(status_false_res.is_err(), "status=false must be rejected");
+
+    // Wrong corridor (e.g. BTC returned when USDT requested) rejected
+    mode.store(MODE_WRONG_CORRIDOR, Ordering::SeqCst);
+    let wrong_corridor_res = provider.get_rate("NG", "USDT", "NGN").await;
+    assert!(
+        wrong_corridor_res.is_err(),
+        "Wrong corridor asset must be rejected"
+    );
 }
 
 // 7. successful sandbox response maps correctly to HanbovaRate
@@ -389,14 +539,6 @@ async fn test_7_successful_sandbox_response_maps_correctly() {
         .await
         .expect("string rate");
     assert_eq!(rate2.rate, 1625.75);
-
-    // Nested under quote
-    mode.store(MODE_SUCCESS_NESTED_QUOTE, Ordering::SeqCst);
-    let rate3 = provider
-        .get_rate("NG", "USDT", "NGN")
-        .await
-        .expect("nested rate");
-    assert_eq!(rate3.rate, 1630.00);
 }
 
 // 8. sandbox successful response has: environment=sandbox, provider=bitnob, is_live=false
@@ -571,6 +713,27 @@ async fn test_12_production_behavior_not_accidentally_enabled_in_sandbox() {
     assert_eq!(prod_rate.environment, "production");
 }
 
+// 13. Client whoami test
+#[tokio::test]
+async fn test_13_client_whoami_verifies_authentication() {
+    let (base_url, mode) = start_mock_server().await;
+
+    let client = BitnobClient::with_config(
+        Some("client-id-123".to_string()),
+        Some("client-secret-abc".to_string()),
+        ProviderMode::Sandbox,
+        Some(base_url),
+    );
+
+    let whoami = client.whoami().await.expect("whoami success");
+    assert_eq!(whoami.status, Some(true));
+
+    // Test 401 failure
+    mode.store(MODE_HTTP_401_UNAUTHORIZED, Ordering::SeqCst);
+    let err = client.whoami().await.unwrap_err();
+    assert!(err.to_string().contains("authentication failed"));
+}
+
 // Opt-in real Bitnob sandbox test: only executed when explicitly triggered and credentials exist
 #[tokio::test]
 #[ignore]
@@ -585,20 +748,31 @@ async fn test_real_bitnob_sandbox_connectivity() {
         return;
     }
 
-    let provider = BitnobRateProvider::with_config(
-        client_id,
-        client_secret,
+    let client = BitnobClient::with_config(
+        client_id.clone(),
+        client_secret.clone(),
         ProviderMode::Sandbox,
-        None, // Uses official sandbox base URL: https://sandboxapi.bitnob.co
+        None, // Uses official URL: https://api.bitnob.com
     );
 
-    println!("[INFO] Attempting real Bitnob sandbox quote request: USDT -> NGN...");
-    let result = provider.get_rate("NG", "USDT", "NGN").await;
+    println!("[STEP A] Verifying credentials via GET /api/whoami...");
+    match client.whoami().await {
+        Ok(whoami) => {
+            println!("[STEP A: PASS] Authenticated: status={:?}", whoami.status);
+        }
+        Err(err) => {
+            eprintln!("[STEP A: FAIL] Authentication failed: {err}");
+            panic!("Live Bitnob whoami failed: {err}");
+        }
+    }
 
-    match result {
+    println!("[STEP B] Requesting quote via POST /api/payouts/quotes (USDT -> NGN)...");
+    let provider =
+        BitnobRateProvider::with_config(client_id, client_secret, ProviderMode::Sandbox, None);
+    match provider.get_rate("NG", "USDT", "NGN").await {
         Ok(rate) => {
             println!("\n====================================================");
-            println!("REAL BITNOB SANDBOX RESPONSE RECEIVED");
+            println!("REAL BITNOB PROVIDER RESPONSE RECEIVED");
             println!("Provider: {}", rate.provider);
             println!("Environment: {}", rate.environment);
             println!("Market: {}", rate.market);
@@ -619,7 +793,7 @@ async fn test_real_bitnob_sandbox_connectivity() {
             println!("FAILED TO CONNECT");
             println!("Error: {err}");
             println!("====================================================\n");
-            panic!("Live Bitnob Sandbox request failed: {err}");
+            panic!("Live Bitnob payout quote request failed: {err}");
         }
     }
 }
