@@ -82,10 +82,10 @@ impl BitnobRateProvider {
             .ok()
             .filter(|s| !s.trim().is_empty());
 
-        let base_url = match mode {
-            crate::config::ProviderMode::Production => "https://api.bitnob.com".to_string(),
-            _ => "https://sandboxapi.bitnob.co".to_string(),
-        };
+        let base_url = std::env::var("BITNOB_BASE_URL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "https://api.bitnob.com".to_string());
 
         let http_client = Client::builder()
             .timeout(Duration::from_secs(8))
@@ -108,10 +108,7 @@ impl BitnobRateProvider {
         mode: crate::config::ProviderMode,
         base_url: Option<String>,
     ) -> Self {
-        let default_url = match mode {
-            crate::config::ProviderMode::Production => "https://api.bitnob.com".to_string(),
-            _ => "https://sandboxapi.bitnob.co".to_string(),
-        };
+        let default_url = "https://api.bitnob.com".to_string();
 
         let http_client = Client::builder()
             .timeout(Duration::from_secs(5))
@@ -338,7 +335,11 @@ impl PlatformRateProvider for BitnobRateProvider {
             )));
         }
 
-        let parsed = match response.json::<BitnobQuoteResponse>().await {
+        let body_text = response.text().await.map_err(|e| {
+            ProviderError::Internal(format!("Failed to read Bitnob response body: {e}"))
+        })?;
+
+        let parsed = match serde_json::from_str::<BitnobQuoteResponse>(&body_text) {
             Ok(p) => p,
             Err(err) => {
                 tracing::warn!(
@@ -352,7 +353,7 @@ impl PlatformRateProvider for BitnobRateProvider {
                     "Failed to parse Bitnob quote JSON response"
                 );
                 return Err(ProviderError::Internal(format!(
-                    "Failed to parse Bitnob quote: {err}"
+                    "Failed to parse Bitnob quote: {err}. Raw: {body_text}"
                 )));
             }
         };

@@ -25,6 +25,12 @@ API_PORT="${HANBOVA_API_PORT:-8080}"
 CLIENT_ID="${BITNOB_CLIENT_ID:-}"
 CLIENT_SECRET="${BITNOB_CLIENT_SECRET:-}"
 
+# Check sibling dev project .env if credentials are not in current env
+if [ -z "${CLIENT_ID}" ] && [ -f "${ROOT_DIR}/../../pigypay/pigypay-backend/.env" ]; then
+  CLIENT_ID=$(grep -E '^BITNOB_CLIENT_ID=' "${ROOT_DIR}/../../pigypay/pigypay-backend/.env" | head -n1 | cut -d= -f2- | tr -d '[:space:]')
+  CLIENT_SECRET=$(grep -E '^BITNOB_CLIENT_SECRET=' "${ROOT_DIR}/../../pigypay/pigypay-backend/.env" | head -n1 | cut -d= -f2- | tr -d '[:space:]')
+fi
+
 echo "=================================================="
 echo "HANBOVA M3B.3B BITNOB SANDBOX SMOKE TEST"
 echo "=================================================="
@@ -98,6 +104,12 @@ else
   else
     echo "=================================================="
     echo "RESULT: FAILED TO CONNECT"
+    echo ""
+    PUB_IP=$(curl -s -m 2 https://api.ipify.org 2>/dev/null || echo "unknown")
+    echo "Diagnostic:"
+    echo "  Current Public IP : ${PUB_IP}"
+    echo "  If Bitnob returned 'IP address not whitelisted', add ${PUB_IP}"
+    echo "  to your Bitnob dashboard IP Whitelist (Settings -> API Keys)."
     echo "=================================================="
     exit 1
   fi
