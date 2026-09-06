@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Query},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -9,9 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
-    providers::{
-        dtone::DtOneAdapter, BillQuoteRequest, CreateBillPaymentRequest, DigitalServicesProvider,
-    },
+    providers::{BillQuoteRequest, CreateBillPaymentRequest, ProviderError},
     state::AppState,
 };
 
@@ -49,85 +47,122 @@ struct ValidateRequest {
     account_reference: String,
 }
 
-async fn get_services(Query(q): Query<CountryQuery>) -> impl IntoResponse {
+fn status_from_provider_error(err: &ProviderError) -> StatusCode {
+    match err {
+        ProviderError::NotConfigured(_) | ProviderError::Unavailable(_) => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        ProviderError::RateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
+        _ => StatusCode::BAD_REQUEST,
+    }
+}
+
+async fn get_services(
+    State(state): State<AppState>,
+    Query(q): Query<CountryQuery>,
+) -> impl IntoResponse {
     let country = q.country.unwrap_or_else(|| "KE".to_string());
-    let adapter = DtOneAdapter::new();
-    match adapter.get_supported_services(&country).await {
+    match state
+        .digital_services_provider
+        .get_supported_services(&country)
+        .await
+    {
         Ok(services) => (
             StatusCode::OK,
             Json(json!({ "country": country.to_uppercase(), "services": services })),
         ),
         Err(e) => (
-            StatusCode::BAD_REQUEST,
+            status_from_provider_error(&e),
             Json(json!({ "error": e.to_string() })),
         ),
     }
 }
 
-async fn get_billers(Query(q): Query<BillersQuery>) -> impl IntoResponse {
+async fn get_billers(
+    State(state): State<AppState>,
+    Query(q): Query<BillersQuery>,
+) -> impl IntoResponse {
     let country = q.country.unwrap_or_else(|| "KE".to_string());
     let service_type = q.service.as_deref().and_then(|value| value.parse().ok());
-    let adapter = DtOneAdapter::new();
-    match adapter.get_billers(&country, service_type.as_ref()).await {
+    match state
+        .digital_services_provider
+        .get_billers(&country, service_type.as_ref())
+        .await
+    {
         Ok(billers) => (StatusCode::OK, Json(json!({ "billers": billers }))),
         Err(e) => (
-            StatusCode::BAD_REQUEST,
+            status_from_provider_error(&e),
             Json(json!({ "error": e.to_string() })),
         ),
     }
 }
 
-async fn get_products(Query(q): Query<ProductsQuery>) -> impl IntoResponse {
+async fn get_products(
+    State(state): State<AppState>,
+    Query(q): Query<ProductsQuery>,
+) -> impl IntoResponse {
     let country = q.country.unwrap_or_else(|| "KE".to_string());
-    let adapter = DtOneAdapter::new();
-    match adapter.get_products(&country, &q.biller_id).await {
+    match state
+        .digital_services_provider
+        .get_products(&country, &q.biller_id)
+        .await
+    {
         Ok(products) => (StatusCode::OK, Json(json!({ "products": products }))),
         Err(e) => (
-            StatusCode::BAD_REQUEST,
+            status_from_provider_error(&e),
             Json(json!({ "error": e.to_string() })),
         ),
     }
 }
 
-async fn validate_customer(Json(req): Json<ValidateRequest>) -> impl IntoResponse {
-    let adapter = DtOneAdapter::new();
-    match adapter
+async fn validate_customer(
+    State(state): State<AppState>,
+    Json(req): Json<ValidateRequest>,
+) -> impl IntoResponse {
+    match state
+        .digital_services_provider
         .validate_customer(&req.biller_id, &req.account_reference)
         .await
     {
         Ok(validation) => (StatusCode::OK, Json(json!(validation))),
         Err(e) => (
-            StatusCode::BAD_REQUEST,
+            status_from_provider_error(&e),
             Json(json!({ "error": e.to_string() })),
         ),
     }
 }
 
-async fn create_bill_quote(Json(req): Json<BillQuoteRequest>) -> impl IntoResponse {
-    let adapter = DtOneAdapter::new();
-    match adapter.get_bill_quote(&req).await {
+async fn create_bill_quote(
+    State(state): State<AppState>,
+    Json(req): Json<BillQuoteRequest>,
+) -> impl IntoResponse {
+    match state.digital_services_provider.get_bill_quote(&req).await {
         Ok(quote) => (StatusCode::OK, Json(json!(quote))),
         Err(e) => (
-            StatusCode::BAD_REQUEST,
+            status_from_provider_error(&e),
             Json(json!({ "error": e.to_string() })),
         ),
     }
 }
 
-async fn pay_bill(Json(req): Json<CreateBillPaymentRequest>) -> impl IntoResponse {
-    let adapter = DtOneAdapter::new();
-    match adapter.pay_bill(&req).await {
+async fn pay_bill(
+    State(state): State<AppState>,
+    Json(req): Json<CreateBillPaymentRequest>,
+) -> impl IntoResponse {
+    match state.digital_services_provider.pay_bill(&req).await {
         Ok(tx) => (StatusCode::OK, Json(json!(tx))),
         Err(e) => (
-            StatusCode::BAD_REQUEST,
+            status_from_provider_error(&e),
             Json(json!({ "error": e.to_string() })),
         ),
     }
 }
 
-async fn get_bill_transaction(Path(id): Path<String>) -> impl IntoResponse {
-    let adapter = DtOneAdapter::new();
-    match adapter.get_bill_status(&id).await {
+async fn get_bill_transaction(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match state.digital_services_provider.get_bill_status(&id).await {
         Ok(tx) => (StatusCode::OK, Json(json!(tx))),
         Err(e) => (
             StatusCode::NOT_FOUND,

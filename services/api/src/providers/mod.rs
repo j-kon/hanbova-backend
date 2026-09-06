@@ -10,6 +10,42 @@ pub mod rates;
 
 pub use rates::{BitnobRateProvider, MockRateProvider, PlatformRateProvider, ALL_MARKETS};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityStatus {
+    Disabled,
+    Mock,
+    Sandbox,
+    Production,
+    Test,
+}
+
+impl std::fmt::Display for CapabilityStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Disabled => "disabled",
+                Self::Mock => "mock",
+                Self::Sandbox => "sandbox",
+                Self::Production => "production",
+                Self::Test => "test",
+            }
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderCapabilities {
+    pub bitnob_rates: CapabilityStatus,
+    pub bitnob_wallet: CapabilityStatus,
+    pub bitnob_payouts: CapabilityStatus,
+    pub dtone_bills: CapabilityStatus,
+    pub lightning: CapabilityStatus,
+    pub protected_send: CapabilityStatus,
+}
+
 #[derive(Debug, Error, Clone, Serialize, Deserialize)]
 pub enum ProviderError {
     #[error("Provider not configured: {0}")]

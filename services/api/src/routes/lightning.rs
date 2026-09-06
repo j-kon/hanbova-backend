@@ -43,11 +43,23 @@ pub fn router() -> Router<AppState> {
         .route("/lightning/melt-quote", post(create_melt_quote))
 }
 
+fn lightning_disabled_response() -> axum::response::Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({ "error": "Lightning service is currently disabled in this environment" })),
+    )
+        .into_response()
+}
+
 async fn create_invoice(
     _auth: AuthUser,
     State(state): State<AppState>,
     Json(payload): Json<CreateInvoiceDto>,
 ) -> impl IntoResponse {
+    if !state.config.lightning_enabled {
+        return lightning_disabled_response();
+    }
+
     let amount = match SatoshiAmount::new(payload.amount_sats) {
         Ok(a) => a,
         Err(_) => {
@@ -86,6 +98,10 @@ async fn pay_invoice(
     State(state): State<AppState>,
     Json(payload): Json<PayInvoiceDto>,
 ) -> impl IntoResponse {
+    if !state.config.lightning_enabled {
+        return lightning_disabled_response();
+    }
+
     let req = PayInvoiceRequest {
         bolt11: payload.bolt11,
         max_fee_sats: payload.max_fee_sats,
@@ -108,6 +124,10 @@ async fn create_mint_quote(
     State(state): State<AppState>,
     Json(payload): Json<MintQuoteDto>,
 ) -> impl IntoResponse {
+    if !state.config.lightning_enabled {
+        return lightning_disabled_response();
+    }
+
     match state
         .cashu_bridge
         .create_mint_quote(payload.amount_sats)
@@ -127,6 +147,10 @@ async fn check_mint_quote(
     State(state): State<AppState>,
     Path(quote_id): Path<String>,
 ) -> impl IntoResponse {
+    if !state.config.lightning_enabled {
+        return lightning_disabled_response();
+    }
+
     match state.cashu_bridge.check_mint_quote(&quote_id).await {
         Ok(quote) => (StatusCode::OK, Json(serde_json::to_value(quote).unwrap())).into_response(),
         Err(_) => (
@@ -142,6 +166,10 @@ async fn create_melt_quote(
     State(state): State<AppState>,
     Json(payload): Json<MeltQuoteDto>,
 ) -> impl IntoResponse {
+    if !state.config.lightning_enabled {
+        return lightning_disabled_response();
+    }
+
     match state.cashu_bridge.create_melt_quote(&payload.bolt11).await {
         Ok(quote) => (StatusCode::OK, Json(serde_json::to_value(quote).unwrap())).into_response(),
         Err(_) => (

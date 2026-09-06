@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Query},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
-    providers::{dtone::DtOneAdapter, EsimProvider, PurchaseEsimRequest},
+    providers::{ProviderError, PurchaseEsimRequest},
     state::AppState,
 };
 
@@ -32,44 +32,59 @@ struct TopupRequest {
     package_id: String,
 }
 
-async fn get_packages(Query(q): Query<PackagesQuery>) -> impl IntoResponse {
+fn status_from_provider_error(err: &ProviderError) -> StatusCode {
+    match err {
+        ProviderError::NotConfigured(_) | ProviderError::Unavailable(_) => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        ProviderError::RateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
+        _ => StatusCode::BAD_REQUEST,
+    }
+}
+
+async fn get_packages(
+    State(state): State<AppState>,
+    Query(q): Query<PackagesQuery>,
+) -> impl IntoResponse {
     let country = q.country.unwrap_or_else(|| "KE".to_string());
-    let adapter = DtOneAdapter::new();
-    match adapter.get_esim_packages(&country).await {
+    match state.esim_provider.get_esim_packages(&country).await {
         Ok(packages) => (StatusCode::OK, Json(json!({ "packages": packages }))),
         Err(e) => (
-            StatusCode::BAD_REQUEST,
+            status_from_provider_error(&e),
             Json(json!({ "error": e.to_string() })),
         ),
     }
 }
 
-async fn purchase_esim(Json(req): Json<PurchaseEsimRequest>) -> impl IntoResponse {
-    let adapter = DtOneAdapter::new();
-    match adapter.purchase_esim(&req).await {
+async fn purchase_esim(
+    State(state): State<AppState>,
+    Json(req): Json<PurchaseEsimRequest>,
+) -> impl IntoResponse {
+    match state.esim_provider.purchase_esim(&req).await {
         Ok(profile) => (StatusCode::OK, Json(json!(profile))),
         Err(e) => (
-            StatusCode::BAD_REQUEST,
+            status_from_provider_error(&e),
             Json(json!({ "error": e.to_string() })),
         ),
     }
 }
 
-async fn list_profiles() -> impl IntoResponse {
-    let adapter = DtOneAdapter::new();
-    let profile = adapter.get_esim_status("esim_prof_sample").await;
+async fn list_profiles(State(state): State<AppState>) -> impl IntoResponse {
+    let profile = state
+        .esim_provider
+        .get_esim_status("esim_prof_sample")
+        .await;
     match profile {
         Ok(p) => (StatusCode::OK, Json(json!({ "profiles": vec![p] }))),
         Err(e) => (
-            StatusCode::BAD_REQUEST,
+            status_from_provider_error(&e),
             Json(json!({ "error": e.to_string() })),
         ),
     }
 }
 
-async fn get_profile(Path(id): Path<String>) -> impl IntoResponse {
-    let adapter = DtOneAdapter::new();
-    match adapter.get_esim_status(&id).await {
+async fn get_profile(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    match state.esim_provider.get_esim_status(&id).await {
         Ok(profile) => (StatusCode::OK, Json(json!(profile))),
         Err(e) => (
             StatusCode::NOT_FOUND,
@@ -78,12 +93,15 @@ async fn get_profile(Path(id): Path<String>) -> impl IntoResponse {
     }
 }
 
-async fn topup_profile(Path(id): Path<String>, Json(req): Json<TopupRequest>) -> impl IntoResponse {
-    let adapter = DtOneAdapter::new();
-    match adapter.top_up_esim(&id, &req.package_id).await {
+async fn topup_profile(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<TopupRequest>,
+) -> impl IntoResponse {
+    match state.esim_provider.top_up_esim(&id, &req.package_id).await {
         Ok(profile) => (StatusCode::OK, Json(json!(profile))),
         Err(e) => (
-            StatusCode::BAD_REQUEST,
+            status_from_provider_error(&e),
             Json(json!({ "error": e.to_string() })),
         ),
     }
