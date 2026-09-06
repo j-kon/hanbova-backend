@@ -70,6 +70,51 @@ pub enum ProviderError {
     Internal(String),
 }
 
+impl ProviderError {
+    pub fn status_code(&self) -> axum::http::StatusCode {
+        match self {
+            ProviderError::NotConfigured(_) | ProviderError::Unavailable(_) => {
+                axum::http::StatusCode::SERVICE_UNAVAILABLE
+            }
+            ProviderError::RateLimit(_) => axum::http::StatusCode::TOO_MANY_REQUESTS,
+            ProviderError::ValidationFailed(_)
+            | ProviderError::UnsupportedCountry(_)
+            | ProviderError::UnsupportedService(_) => axum::http::StatusCode::BAD_REQUEST,
+            ProviderError::Internal(_) => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    pub fn error_code(&self) -> &'static str {
+        match self {
+            ProviderError::NotConfigured(_) => "provider_not_configured",
+            ProviderError::Unavailable(_) => "provider_unavailable",
+            ProviderError::RateLimit(_) => "provider_rate_limited",
+            ProviderError::ValidationFailed(_) => "invalid_request",
+            ProviderError::UnsupportedCountry(_) => "unsupported_country",
+            ProviderError::UnsupportedService(_) => "unsupported_service",
+            ProviderError::Internal(_) => "provider_internal_error",
+        }
+    }
+
+    pub fn to_response_body(&self) -> serde_json::Value {
+        let msg = match self {
+            ProviderError::NotConfigured(m) => m.as_str(),
+            ProviderError::Unavailable(m) => m.as_str(),
+            ProviderError::RateLimit(m) => m.as_str(),
+            ProviderError::ValidationFailed(m) => m.as_str(),
+            ProviderError::UnsupportedCountry(m) => m.as_str(),
+            ProviderError::UnsupportedService(m) => m.as_str(),
+            ProviderError::Internal(_) => "This service is currently unavailable",
+        };
+
+        serde_json::json!({
+            "code": self.error_code(),
+            "message": msg,
+            "error": msg,
+        })
+    }
+}
+
 pub type ProviderResult<T> = Result<T, ProviderError>;
 
 // ==========================================

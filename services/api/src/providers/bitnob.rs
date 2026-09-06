@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub struct BitnobAdapter {
     client_id: Option<String>,
     client_secret: Option<String>,
+    #[allow(dead_code)]
     legacy_api_key: Option<String>,
     mode: crate::config::ProviderMode,
 }
@@ -43,8 +44,7 @@ impl BitnobAdapter {
         match self.mode {
             crate::config::ProviderMode::Mock => true,
             crate::config::ProviderMode::Sandbox | crate::config::ProviderMode::Production => {
-                (self.client_id.is_some() && self.client_secret.is_some())
-                    || self.legacy_api_key.is_some()
+                self.client_id.is_some() && self.client_secret.is_some()
             }
         }
     }
@@ -66,6 +66,12 @@ impl PayoutProvider for BitnobAdapter {
         &self,
         country: Option<&str>,
     ) -> ProviderResult<Vec<PayoutCorridor>> {
+        if self.mode != crate::config::ProviderMode::Mock {
+            return Err(ProviderError::Unavailable(
+                "Bitnob sandbox payout corridors are not live in this milestone".to_string(),
+            ));
+        }
+
         let all_corridors = vec![
             PayoutCorridor {
                 id: "ke_mpesa".to_string(),
@@ -158,6 +164,12 @@ impl PayoutProvider for BitnobAdapter {
     }
 
     async fn get_payout_quote(&self, req: &PayoutQuoteRequest) -> ProviderResult<PayoutQuote> {
+        if self.mode != crate::config::ProviderMode::Mock {
+            return Err(ProviderError::Unavailable(
+                "Bitnob sandbox payout quotes are not live in this milestone".to_string(),
+            ));
+        }
+
         let corridors = self.get_supported_corridors(None).await?;
         let corridor = corridors
             .into_iter()
@@ -177,7 +189,6 @@ impl PayoutProvider for BitnobAdapter {
             )));
         }
 
-        // Calibrated reference rates (e.g., 1 BTC = 7.8M KES, 95M NGN, 900k GHS, 1.1M ZAR, 220M UGX, 80M RWF)
         let rate_per_btc = match corridor.currency.as_str() {
             "KES" => 7_800_000.0,
             "NGN" => 95_000_000.0,
@@ -222,75 +233,72 @@ impl PayoutProvider for BitnobAdapter {
                 provider: "bitnob".to_string(),
                 created_at: Utc::now(),
             }),
-            crate::config::ProviderMode::Sandbox => {
-                if !self.is_configured() {
-                    return Err(ProviderError::NotConfigured(
-                        "Bitnob sandbox credentials (BITNOB_CLIENT_ID, BITNOB_CLIENT_SECRET) missing"
-                            .to_string(),
-                    ));
-                }
-                Err(ProviderError::Unavailable(
-                    "Bitnob sandbox payout execution is not live in this milestone".to_string(),
-                ))
-            }
-            crate::config::ProviderMode::Production => {
-                if !self.is_configured() {
-                    return Err(ProviderError::NotConfigured(
-                        "Bitnob production credentials missing".to_string(),
-                    ));
-                }
-                Err(ProviderError::Unavailable(
-                    "Bitnob production payout execution is not configured".to_string(),
-                ))
-            }
+            crate::config::ProviderMode::Sandbox => Err(ProviderError::Unavailable(
+                "Bitnob sandbox payout execution is not live in this milestone".to_string(),
+            )),
+            crate::config::ProviderMode::Production => Err(ProviderError::Unavailable(
+                "Bitnob production payout execution is not configured".to_string(),
+            )),
         }
     }
 
     async fn get_payout_status(&self, payout_id: &str) -> ProviderResult<PayoutTransaction> {
-        Ok(PayoutTransaction {
-            id: payout_id.to_string(),
-            quote_id: "quote_ref".to_string(),
-            corridor_id: "ke_mpesa".to_string(),
-            recipient_name: "John Doe".to_string(),
-            recipient_account: "254712345678".to_string(),
-            amount_sats: 1280,
-            amount_fiat: 100.0,
-            status: "completed".to_string(),
-            provider: "bitnob".to_string(),
-            created_at: Utc::now(),
-        })
+        match self.mode {
+            crate::config::ProviderMode::Mock => Ok(PayoutTransaction {
+                id: payout_id.to_string(),
+                quote_id: "quote_ref".to_string(),
+                corridor_id: "ke_mpesa".to_string(),
+                recipient_name: "John Doe".to_string(),
+                recipient_account: "254712345678".to_string(),
+                amount_sats: 1280,
+                amount_fiat: 100.0,
+                status: "completed".to_string(),
+                provider: "bitnob_mock".to_string(),
+                created_at: Utc::now(),
+            }),
+            crate::config::ProviderMode::Sandbox => Err(ProviderError::Unavailable(
+                "Bitnob sandbox payout status is not live in this milestone".to_string(),
+            )),
+            crate::config::ProviderMode::Production => Err(ProviderError::Unavailable(
+                "Bitnob production payout status is not configured".to_string(),
+            )),
+        }
     }
 }
 
 #[async_trait]
 impl CardProvider for BitnobAdapter {
     async fn check_card_eligibility(&self, country: &str) -> ProviderResult<CardEligibility> {
-        if self.mode != crate::config::ProviderMode::Mock && !self.is_configured() {
-            return Err(ProviderError::NotConfigured(
-                "Bitnob credentials missing for card eligibility check".to_string(),
-            ));
+        match self.mode {
+            crate::config::ProviderMode::Mock => {
+                let country_upper = country.trim().to_uppercase();
+                let (eligible, reason) = match country_upper.as_str() {
+                    "NG" | "KE" | "GH" | "ZA" | "UG" | "RW" => (true, None),
+                    _ => (
+                        false,
+                        Some("Virtual card issuing is currently restricted in this jurisdiction pending partner compliance.".to_string()),
+                    ),
+                };
+
+                Ok(CardEligibility {
+                    is_eligible: eligible,
+                    country: country_upper,
+                    supported_types: if eligible {
+                        vec!["virtual_visa".to_string(), "virtual_mastercard".to_string()]
+                    } else {
+                        vec![]
+                    },
+                    min_funding_sats: 5000,
+                    reason,
+                })
+            }
+            crate::config::ProviderMode::Sandbox => Err(ProviderError::Unavailable(
+                "Bitnob card eligibility is not live in this milestone".to_string(),
+            )),
+            crate::config::ProviderMode::Production => Err(ProviderError::Unavailable(
+                "Bitnob card eligibility is not configured in production".to_string(),
+            )),
         }
-
-        let country_upper = country.trim().to_uppercase();
-        let (eligible, reason) = match country_upper.as_str() {
-            "NG" | "KE" | "GH" | "ZA" | "UG" | "RW" => (true, None),
-            _ => (
-                false,
-                Some("Virtual card issuing is currently restricted in this jurisdiction pending partner compliance.".to_string()),
-            ),
-        };
-
-        Ok(CardEligibility {
-            is_eligible: eligible,
-            country: country_upper,
-            supported_types: if eligible {
-                vec!["virtual_visa".to_string(), "virtual_mastercard".to_string()]
-            } else {
-                vec![]
-            },
-            min_funding_sats: 5000,
-            reason,
-        })
     }
 
     async fn create_virtual_card(&self, req: &CreateCardRequest) -> ProviderResult<VirtualCard> {
@@ -315,40 +323,34 @@ impl CardProvider for BitnobAdapter {
                     created_at: now,
                 })
             }
-            crate::config::ProviderMode::Sandbox => {
-                if !self.is_configured() {
-                    return Err(ProviderError::NotConfigured(
-                        "Bitnob sandbox credentials missing for virtual card creation".to_string(),
-                    ));
-                }
-                Err(ProviderError::Unavailable(
-                    "Bitnob virtual card issuance is pending partner compliance and is not live in this milestone".to_string(),
-                ))
-            }
-            crate::config::ProviderMode::Production => {
-                if !self.is_configured() {
-                    return Err(ProviderError::NotConfigured(
-                        "Bitnob production credentials missing".to_string(),
-                    ));
-                }
-                Err(ProviderError::Unavailable(
-                    "Bitnob production card issuance is not configured".to_string(),
-                ))
-            }
+            crate::config::ProviderMode::Sandbox => Err(ProviderError::Unavailable(
+                "Bitnob virtual card issuance is pending partner compliance and is not live in this milestone".to_string(),
+            )),
+            crate::config::ProviderMode::Production => Err(ProviderError::Unavailable(
+                "Bitnob production card issuance is not configured".to_string(),
+            )),
         }
     }
 
     async fn get_card_status(&self, card_id: &str) -> ProviderResult<VirtualCard> {
-        Ok(VirtualCard {
-            id: card_id.to_string(),
-            masked_pan: "4111 •••• •••• 8821".to_string(),
-            cardholder_name: "Hanbova Traveler".to_string(),
-            expiry_month: 12,
-            expiry_year: 2029,
-            currency: "USD".to_string(),
-            balance_sats: 15000,
-            status: "active".to_string(),
-            created_at: Utc::now(),
-        })
+        match self.mode {
+            crate::config::ProviderMode::Mock => Ok(VirtualCard {
+                id: card_id.to_string(),
+                masked_pan: "4111 •••• •••• 8821".to_string(),
+                cardholder_name: "Hanbova Traveler".to_string(),
+                expiry_month: 12,
+                expiry_year: 2029,
+                currency: "USD".to_string(),
+                balance_sats: 15000,
+                status: "active".to_string(),
+                created_at: Utc::now(),
+            }),
+            crate::config::ProviderMode::Sandbox => Err(ProviderError::Unavailable(
+                "Bitnob sandbox card status is not live in this milestone".to_string(),
+            )),
+            crate::config::ProviderMode::Production => Err(ProviderError::Unavailable(
+                "Bitnob production card status is not configured".to_string(),
+            )),
+        }
     }
 }

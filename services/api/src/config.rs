@@ -307,6 +307,21 @@ impl AppConfig {
             ));
         }
 
+        if let Some(bitnob_env) = vars.get("BITNOB_ENVIRONMENT").map(String::as_str) {
+            let bitnob_env_clean = bitnob_env.trim().to_lowercase();
+            if provider_mode.is_sandbox() && bitnob_env_clean == "production" {
+                problems.push(
+                    "BITNOB_ENVIRONMENT cannot be production when PROVIDER_MODE is sandbox"
+                        .to_string(),
+                );
+            } else if provider_mode.is_production() && bitnob_env_clean == "sandbox" {
+                problems.push(
+                    "BITNOB_ENVIRONMENT cannot be sandbox when PROVIDER_MODE is production"
+                        .to_string(),
+                );
+            }
+        }
+
         let lightning_enabled = match vars.get("LIGHTNING_ENABLED").map(String::as_str) {
             Some("true" | "1" | "yes") => true,
             Some("false" | "0" | "no") => false,
@@ -320,6 +335,13 @@ impl AppConfig {
                 !pilot_or_prod
             }
         };
+
+        if pilot && lightning_enabled {
+            problems.push(
+                "Lightning cannot be enabled in pilot until a non-mock provider is configured"
+                    .to_string(),
+            );
+        }
 
         if !problems.is_empty() {
             return Err(ConfigError {

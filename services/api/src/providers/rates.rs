@@ -58,8 +58,7 @@ pub trait PlatformRateProvider: Send + Sync {
 pub struct BitnobRateProvider {
     client_id: Option<String>,
     client_secret: Option<String>,
-    api_key: Option<String>,
-    environment: String, // "mock", "sandbox", "production"
+    mode: crate::config::ProviderMode,
     base_url: String,
     http_client: Client,
 }
@@ -67,26 +66,24 @@ pub struct BitnobRateProvider {
 impl BitnobRateProvider {
     /// Constructs a BitnobRateProvider from environment variables.
     pub fn new() -> Self {
+        let mode = match std::env::var("PROVIDER_MODE").as_deref() {
+            Ok("sandbox") => crate::config::ProviderMode::Sandbox,
+            Ok("production") => crate::config::ProviderMode::Production,
+            _ => crate::config::ProviderMode::Mock,
+        };
+        Self::with_mode(mode)
+    }
+
+    pub fn with_mode(mode: crate::config::ProviderMode) -> Self {
         let client_id = std::env::var("BITNOB_CLIENT_ID")
             .ok()
             .filter(|s| !s.trim().is_empty());
         let client_secret = std::env::var("BITNOB_CLIENT_SECRET")
             .ok()
             .filter(|s| !s.trim().is_empty());
-        let api_key = std::env::var("BITNOB_API_KEY")
-            .ok()
-            .filter(|s| !s.trim().is_empty());
 
-        let environment = std::env::var("BITNOB_ENVIRONMENT").unwrap_or_else(|_| {
-            if client_id.is_some() || api_key.is_some() {
-                "sandbox".to_string()
-            } else {
-                "mock".to_string()
-            }
-        });
-
-        let base_url = match environment.as_str() {
-            "production" => "https://api.bitnob.co".to_string(),
+        let base_url = match mode {
+            crate::config::ProviderMode::Production => "https://api.bitnob.co".to_string(),
             _ => "https://sandboxapi.bitnob.co".to_string(),
         };
 
@@ -98,8 +95,7 @@ impl BitnobRateProvider {
         Self {
             client_id,
             client_secret,
-            api_key,
-            environment,
+            mode,
             base_url,
             http_client,
         }
@@ -109,12 +105,11 @@ impl BitnobRateProvider {
     pub fn with_config(
         client_id: Option<String>,
         client_secret: Option<String>,
-        environment: &str,
+        mode: crate::config::ProviderMode,
         base_url: Option<String>,
     ) -> Self {
-        let env_str = environment.to_string();
-        let default_url = match env_str.as_str() {
-            "production" => "https://api.bitnob.co".to_string(),
+        let default_url = match mode {
+            crate::config::ProviderMode::Production => "https://api.bitnob.co".to_string(),
             _ => "https://sandboxapi.bitnob.co".to_string(),
         };
 
@@ -126,15 +121,23 @@ impl BitnobRateProvider {
         Self {
             client_id,
             client_secret,
-            api_key: None,
-            environment: env_str,
+            mode,
             base_url: base_url.unwrap_or(default_url),
             http_client,
         }
     }
 
-    pub fn environment(&self) -> &str {
-        &self.environment
+    pub fn is_configured(&self) -> bool {
+        match self.mode {
+            crate::config::ProviderMode::Mock => true,
+            crate::config::ProviderMode::Sandbox | crate::config::ProviderMode::Production => {
+                self.client_id.is_some() && self.client_secret.is_some()
+            }
+        }
+    }
+
+    pub fn mode(&self) -> crate::config::ProviderMode {
+        self.mode
     }
 
     /// Computes HMAC-SHA256 signature for Bitnob request authentication.
@@ -199,7 +202,7 @@ impl PlatformRateProvider for BitnobRateProvider {
         let currency_upper = target_currency.trim().to_uppercase();
 
         // 1. Explicit mock mode returns deterministic rate (NEVER marked live)
-        if self.environment == "mock" {
+        if self.mode == crate::config::ProviderMode::Mock {
             // USD→USD is meaningless; instead express as 1 USDT = $1.00 (tether peg)
             // Rates are indicative mock values only.
             let mock_rate = match (asset_upper.as_str(), currency_upper.as_str()) {
@@ -234,23 +237,10 @@ impl PlatformRateProvider for BitnobRateProvider {
         let (client_id, client_secret) = match (&self.client_id, &self.client_secret) {
             (Some(cid), Some(sec)) => (cid.as_str(), sec.as_str()),
             _ => {
-                if self.environment == "production" {
-                    return Err(ProviderError::NotConfigured(
-                        "Bitnob API credentials missing in production".to_string(),
-                    ));
-                } else if self.environment == "sandbox" {
-                    if let Some(key) = &self.api_key {
-                        (key.as_str(), "")
-                    } else {
-                        return Err(ProviderError::NotConfigured(
-                            "Bitnob credentials not configured in sandbox".to_string(),
-                        ));
-                    }
-                } else {
-                    return Err(ProviderError::NotConfigured(
-                        "Bitnob credentials not configured".to_string(),
-                    ));
-                }
+                let env_name = self.mode.to_string();
+                return Err(ProviderError::NotConfigured(format!(
+                    "Bitnob modern credentials (BITNOB_CLIENT_ID, BITNOB_CLIENT_SECRET) missing in {env_name}"
+                )));
             }
         };
 
@@ -267,25 +257,18 @@ impl PlatformRateProvider for BitnobRateProvider {
         })
         .to_string();
 
-        let mut request = self
+        let signature =
+            Self::generate_signature(client_id, client_secret, timestamp, &nonce, &payload)?;
+
+        let request = self
             .http_client
             .post(format!("{}/api/v1/payouts/quotes", self.base_url))
             .header("Content-Type", "application/json")
-            .header("Accept", "application/json");
-
-        if !client_secret.is_empty() {
-            let signature =
-                Self::generate_signature(client_id, client_secret, timestamp, &nonce, &payload)?;
-
-            request = request
-                .header("X-Auth-Client", client_id)
-                .header("X-Auth-Timestamp", timestamp.to_string())
-                .header("X-Auth-Nonce", nonce)
-                .header("X-Auth-Signature", signature);
-        } else {
-            // Bearer token fallback for legacy sandbox
-            request = request.header("Authorization", format!("Bearer {client_id}"));
-        }
+            .header("Accept", "application/json")
+            .header("X-Auth-Client", client_id)
+            .header("X-Auth-Timestamp", timestamp.to_string())
+            .header("X-Auth-Nonce", nonce)
+            .header("X-Auth-Signature", signature);
 
         let response = request
             .body(payload)
@@ -315,7 +298,7 @@ impl PlatformRateProvider for BitnobRateProvider {
                 .or_else(|| d.exchange_rate.as_ref().and_then(|er| er.rate))
         });
 
-        let is_live = self.environment == "production";
+        let is_live = self.mode == crate::config::ProviderMode::Production;
 
         match extracted_rate {
             Some(rate) if rate > 0.0 => Ok(HanbovaRate::new(
@@ -325,7 +308,7 @@ impl PlatformRateProvider for BitnobRateProvider {
                 asset_upper,
                 rate,
                 "bitnob",
-                &self.environment,
+                self.mode.to_string(),
                 is_live, // true ONLY for verified production provider quote, NEVER sandbox
                 false,   // is_stale = false
                 Utc::now(),
@@ -423,7 +406,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_environment_returns_mock_rate_not_live() {
-        let provider = BitnobRateProvider::with_config(None, None, "mock", None);
+        let provider =
+            BitnobRateProvider::with_config(None, None, crate::config::ProviderMode::Mock, None);
         let rate = provider
             .get_rate("NG", "USDT", "NGN")
             .await
@@ -439,7 +423,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_production_without_credentials_fails() {
-        let provider = BitnobRateProvider::with_config(None, None, "production", None);
+        let provider = BitnobRateProvider::with_config(
+            None,
+            None,
+            crate::config::ProviderMode::Production,
+            None,
+        );
         let result = provider.get_rate("NG", "USDT", "NGN").await;
         assert!(result.is_err());
         assert!(matches!(
@@ -450,7 +439,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_sandbox_without_credentials_fails() {
-        let provider = BitnobRateProvider::with_config(None, None, "sandbox", None);
+        let provider =
+            BitnobRateProvider::with_config(None, None, crate::config::ProviderMode::Sandbox, None);
         let result = provider.get_rate("NG", "USDT", "NGN").await;
         assert!(result.is_err());
         assert!(matches!(

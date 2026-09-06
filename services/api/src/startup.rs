@@ -109,7 +109,7 @@ mod tests {
         let caps = state.capabilities();
         assert_eq!(
             caps.bitnob_rates,
-            crate::providers::CapabilityStatus::Sandbox
+            crate::providers::CapabilityStatus::Disabled
         );
         assert_eq!(
             caps.dtone_bills,

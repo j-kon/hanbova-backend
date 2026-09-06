@@ -23,7 +23,8 @@ fn test_mock_rate_not_marked_live() {
 
 #[tokio::test]
 async fn test_bitnob_mock_environment_returns_truthful_non_live_rate() {
-    let provider = BitnobRateProvider::with_config(None, None, "mock", None);
+    let provider =
+        BitnobRateProvider::with_config(None, None, hanbova_api::config::ProviderMode::Mock, None);
     let rate = provider
         .get_rate("NG", "USDT", "NGN")
         .await
@@ -41,7 +42,12 @@ async fn test_bitnob_mock_environment_returns_truthful_non_live_rate() {
 async fn test_production_provider_failure_never_silently_falls_back_to_mock() {
     // A production provider without credentials or when connection fails
     // must strictly error, not return mock data
-    let prod_provider = BitnobRateProvider::with_config(None, None, "production", None);
+    let prod_provider = BitnobRateProvider::with_config(
+        None,
+        None,
+        hanbova_api::config::ProviderMode::Production,
+        None,
+    );
     let result = prod_provider.get_rate("NG", "USDT", "NGN").await;
     assert!(
         result.is_err(),
@@ -61,7 +67,12 @@ async fn test_production_provider_failure_never_silently_falls_back_to_mock() {
 async fn test_sandbox_provider_failure_never_silently_falls_back_to_mock() {
     // A sandbox provider without credentials or when connection fails
     // must strictly error, not silently fall back to mock rate
-    let sandbox_provider = BitnobRateProvider::with_config(None, None, "sandbox", None);
+    let sandbox_provider = BitnobRateProvider::with_config(
+        None,
+        None,
+        hanbova_api::config::ProviderMode::Sandbox,
+        None,
+    );
     let result = sandbox_provider.get_rate("NG", "USDT", "NGN").await;
     assert!(result.is_err(), "Sandbox mode must fail when unconfigured");
 

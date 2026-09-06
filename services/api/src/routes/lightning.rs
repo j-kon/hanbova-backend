@@ -46,7 +46,11 @@ pub fn router() -> Router<AppState> {
 fn lightning_disabled_response() -> axum::response::Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
-        Json(serde_json::json!({ "error": "Lightning service is currently disabled in this environment" })),
+        Json(serde_json::json!({
+            "code": "provider_unavailable",
+            "message": "Lightning service is currently disabled in this environment",
+            "error": "Lightning service is currently disabled in this environment"
+        })),
     )
         .into_response()
 }
@@ -65,7 +69,11 @@ async fn create_invoice(
         Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "Invalid Lightning amount" })),
+                Json(serde_json::json!({
+                    "code": "invalid_request",
+                    "message": "Invalid Lightning amount",
+                    "error": "Invalid Lightning amount"
+                })),
             )
                 .into_response()
         }
@@ -87,7 +95,11 @@ async fn create_invoice(
             .into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "Unable to create Lightning invoice" })),
+            Json(serde_json::json!({
+                "code": "provider_internal_error",
+                "message": "Unable to create Lightning invoice",
+                "error": "Unable to create Lightning invoice"
+            })),
         )
             .into_response(),
     }
@@ -113,7 +125,11 @@ async fn pay_invoice(
         }
         Err(_) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Unable to pay Lightning invoice" })),
+            Json(serde_json::json!({
+                "code": "invalid_request",
+                "message": "Unable to pay Lightning invoice",
+                "error": "Unable to pay Lightning invoice"
+            })),
         )
             .into_response(),
     }
@@ -136,7 +152,11 @@ async fn create_mint_quote(
         Ok(quote) => (StatusCode::OK, Json(serde_json::to_value(quote).unwrap())).into_response(),
         Err(_) => (
             StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": "Unable to create mint quote" })),
+            Json(serde_json::json!({
+                "code": "provider_unavailable",
+                "message": "Unable to create mint quote",
+                "error": "Unable to create mint quote"
+            })),
         )
             .into_response(),
     }
@@ -155,7 +175,11 @@ async fn check_mint_quote(
         Ok(quote) => (StatusCode::OK, Json(serde_json::to_value(quote).unwrap())).into_response(),
         Err(_) => (
             StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": "Unable to retrieve mint quote" })),
+            Json(serde_json::json!({
+                "code": "provider_unavailable",
+                "message": "Unable to retrieve mint quote",
+                "error": "Unable to retrieve mint quote"
+            })),
         )
             .into_response(),
     }
@@ -174,7 +198,11 @@ async fn create_melt_quote(
         Ok(quote) => (StatusCode::OK, Json(serde_json::to_value(quote).unwrap())).into_response(),
         Err(_) => (
             StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": "Unable to create melt quote" })),
+            Json(serde_json::json!({
+                "code": "provider_unavailable",
+                "message": "Unable to create melt quote",
+                "error": "Unable to create melt quote"
+            })),
         )
             .into_response(),
     }

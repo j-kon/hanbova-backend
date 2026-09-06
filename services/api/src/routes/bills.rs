@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
-    providers::{BillQuoteRequest, CreateBillPaymentRequest, ProviderError},
+    providers::{BillQuoteRequest, CreateBillPaymentRequest},
     state::AppState,
 };
 
@@ -47,20 +47,26 @@ struct ValidateRequest {
     account_reference: String,
 }
 
-fn status_from_provider_error(err: &ProviderError) -> StatusCode {
-    match err {
-        ProviderError::NotConfigured(_) | ProviderError::Unavailable(_) => {
-            StatusCode::SERVICE_UNAVAILABLE
-        }
-        ProviderError::RateLimit(_) => StatusCode::TOO_MANY_REQUESTS,
-        _ => StatusCode::BAD_REQUEST,
-    }
+use crate::providers::CapabilityStatus;
+
+fn bills_disabled_response() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "code": "provider_unavailable",
+            "message": "Bill services are not available in this environment",
+            "error": "Bill services are not available in this environment"
+        })),
+    )
 }
 
 async fn get_services(
     State(state): State<AppState>,
     Query(q): Query<CountryQuery>,
 ) -> impl IntoResponse {
+    if state.capabilities().dtone_bills == CapabilityStatus::Disabled {
+        return bills_disabled_response();
+    }
     let country = q.country.unwrap_or_else(|| "KE".to_string());
     match state
         .digital_services_provider
@@ -71,10 +77,7 @@ async fn get_services(
             StatusCode::OK,
             Json(json!({ "country": country.to_uppercase(), "services": services })),
         ),
-        Err(e) => (
-            status_from_provider_error(&e),
-            Json(json!({ "error": e.to_string() })),
-        ),
+        Err(e) => (e.status_code(), Json(e.to_response_body())),
     }
 }
 
@@ -82,6 +85,9 @@ async fn get_billers(
     State(state): State<AppState>,
     Query(q): Query<BillersQuery>,
 ) -> impl IntoResponse {
+    if state.capabilities().dtone_bills == CapabilityStatus::Disabled {
+        return bills_disabled_response();
+    }
     let country = q.country.unwrap_or_else(|| "KE".to_string());
     let service_type = q.service.as_deref().and_then(|value| value.parse().ok());
     match state
@@ -90,10 +96,7 @@ async fn get_billers(
         .await
     {
         Ok(billers) => (StatusCode::OK, Json(json!({ "billers": billers }))),
-        Err(e) => (
-            status_from_provider_error(&e),
-            Json(json!({ "error": e.to_string() })),
-        ),
+        Err(e) => (e.status_code(), Json(e.to_response_body())),
     }
 }
 
@@ -101,6 +104,9 @@ async fn get_products(
     State(state): State<AppState>,
     Query(q): Query<ProductsQuery>,
 ) -> impl IntoResponse {
+    if state.capabilities().dtone_bills == CapabilityStatus::Disabled {
+        return bills_disabled_response();
+    }
     let country = q.country.unwrap_or_else(|| "KE".to_string());
     match state
         .digital_services_provider
@@ -108,10 +114,7 @@ async fn get_products(
         .await
     {
         Ok(products) => (StatusCode::OK, Json(json!({ "products": products }))),
-        Err(e) => (
-            status_from_provider_error(&e),
-            Json(json!({ "error": e.to_string() })),
-        ),
+        Err(e) => (e.status_code(), Json(e.to_response_body())),
     }
 }
 
@@ -119,16 +122,16 @@ async fn validate_customer(
     State(state): State<AppState>,
     Json(req): Json<ValidateRequest>,
 ) -> impl IntoResponse {
+    if state.capabilities().dtone_bills == CapabilityStatus::Disabled {
+        return bills_disabled_response();
+    }
     match state
         .digital_services_provider
         .validate_customer(&req.biller_id, &req.account_reference)
         .await
     {
         Ok(validation) => (StatusCode::OK, Json(json!(validation))),
-        Err(e) => (
-            status_from_provider_error(&e),
-            Json(json!({ "error": e.to_string() })),
-        ),
+        Err(e) => (e.status_code(), Json(e.to_response_body())),
     }
 }
 
@@ -136,12 +139,12 @@ async fn create_bill_quote(
     State(state): State<AppState>,
     Json(req): Json<BillQuoteRequest>,
 ) -> impl IntoResponse {
+    if state.capabilities().dtone_bills == CapabilityStatus::Disabled {
+        return bills_disabled_response();
+    }
     match state.digital_services_provider.get_bill_quote(&req).await {
         Ok(quote) => (StatusCode::OK, Json(json!(quote))),
-        Err(e) => (
-            status_from_provider_error(&e),
-            Json(json!({ "error": e.to_string() })),
-        ),
+        Err(e) => (e.status_code(), Json(e.to_response_body())),
     }
 }
 
@@ -149,12 +152,12 @@ async fn pay_bill(
     State(state): State<AppState>,
     Json(req): Json<CreateBillPaymentRequest>,
 ) -> impl IntoResponse {
+    if state.capabilities().dtone_bills == CapabilityStatus::Disabled {
+        return bills_disabled_response();
+    }
     match state.digital_services_provider.pay_bill(&req).await {
         Ok(tx) => (StatusCode::OK, Json(json!(tx))),
-        Err(e) => (
-            status_from_provider_error(&e),
-            Json(json!({ "error": e.to_string() })),
-        ),
+        Err(e) => (e.status_code(), Json(e.to_response_body())),
     }
 }
 
@@ -162,11 +165,11 @@ async fn get_bill_transaction(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if state.capabilities().dtone_bills == CapabilityStatus::Disabled {
+        return bills_disabled_response();
+    }
     match state.digital_services_provider.get_bill_status(&id).await {
         Ok(tx) => (StatusCode::OK, Json(json!(tx))),
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": e.to_string() })),
-        ),
+        Err(e) => (e.status_code(), Json(e.to_response_body())),
     }
 }

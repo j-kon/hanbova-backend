@@ -57,6 +57,12 @@ impl Default for DtOneAdapter {
 #[async_trait]
 impl DigitalServicesProvider for DtOneAdapter {
     async fn get_supported_services(&self, country: &str) -> ProviderResult<Vec<BillServiceType>> {
+        if self.mode != crate::config::ProviderMode::Mock {
+            return Err(ProviderError::Unavailable(
+                "DT One sandbox catalog is not connected yet".to_string(),
+            ));
+        }
+
         let c = country.trim().to_uppercase();
         match c.as_str() {
             "KE" => Ok(vec![
@@ -114,6 +120,12 @@ impl DigitalServicesProvider for DtOneAdapter {
         country: &str,
         service: Option<&BillServiceType>,
     ) -> ProviderResult<Vec<Biller>> {
+        if self.mode != crate::config::ProviderMode::Mock {
+            return Err(ProviderError::Unavailable(
+                "DT One sandbox catalog is not connected yet".to_string(),
+            ));
+        }
+
         let c = country.trim().to_uppercase();
         let mut billers = Vec::new();
 
@@ -417,6 +429,12 @@ impl DigitalServicesProvider for DtOneAdapter {
         _country: &str,
         biller_id: &str,
     ) -> ProviderResult<Vec<BillProduct>> {
+        if self.mode != crate::config::ProviderMode::Mock {
+            return Err(ProviderError::Unavailable(
+                "DT One sandbox catalog is not connected yet".to_string(),
+            ));
+        }
+
         let b = biller_id.trim().to_lowercase();
         if b.contains("data") {
             Ok(vec![
@@ -478,9 +496,13 @@ impl DigitalServicesProvider for DtOneAdapter {
             ));
         }
 
-        if self.mode != crate::config::ProviderMode::Mock && !self.is_configured() {
-            return Err(ProviderError::NotConfigured(
-                "DT One credentials missing for customer validation".to_string(),
+        if self.mode == crate::config::ProviderMode::Sandbox {
+            return Err(ProviderError::Unavailable(
+                "DT One sandbox customer validation is not live in this milestone".to_string(),
+            ));
+        } else if self.mode == crate::config::ProviderMode::Production {
+            return Err(ProviderError::Unavailable(
+                "DT One production customer validation is not configured".to_string(),
             ));
         }
 
@@ -495,17 +517,11 @@ impl DigitalServicesProvider for DtOneAdapter {
             });
         }
 
-        let customer_name = if self.mode == crate::config::ProviderMode::Mock {
-            "Verified Customer (Mock)"
-        } else {
-            "Verified Customer (Sandbox)"
-        };
-
         Ok(CustomerValidation {
             is_valid: true,
             biller_id: biller_id.to_string(),
             customer_account: ref_clean.to_string(),
-            customer_name: Some(customer_name.to_string()),
+            customer_name: Some("Verified Customer (Mock)".to_string()),
             outstanding_amount_fiat: Some(0.0),
             message: Some("Account validated successfully".to_string()),
         })
@@ -515,6 +531,16 @@ impl DigitalServicesProvider for DtOneAdapter {
         if req.amount_fiat <= 0.0 {
             return Err(ProviderError::ValidationFailed(
                 "Amount must be greater than zero".to_string(),
+            ));
+        }
+
+        if self.mode == crate::config::ProviderMode::Sandbox {
+            return Err(ProviderError::Unavailable(
+                "DT One sandbox bill quotes are not live in this milestone".to_string(),
+            ));
+        } else if self.mode == crate::config::ProviderMode::Production {
+            return Err(ProviderError::Unavailable(
+                "DT One production bill quotes are not configured".to_string(),
             ));
         }
 
@@ -600,54 +626,52 @@ impl DigitalServicesProvider for DtOneAdapter {
                     created_at: Utc::now(),
                 })
             }
-            crate::config::ProviderMode::Sandbox => {
-                if !self.is_configured() {
-                    return Err(ProviderError::NotConfigured(
-                        "DT One sandbox credentials (DTONE_API_KEY, DTONE_API_SECRET) missing"
-                            .to_string(),
-                    ));
-                }
-                Err(ProviderError::Unavailable(
-                    "DT One sandbox bill payment execution is not live in this milestone"
-                        .to_string(),
-                ))
-            }
-            crate::config::ProviderMode::Production => {
-                if !self.is_configured() {
-                    return Err(ProviderError::NotConfigured(
-                        "DT One production credentials missing".to_string(),
-                    ));
-                }
-                Err(ProviderError::Unavailable(
-                    "DT One production bill payment is not configured".to_string(),
-                ))
-            }
+            crate::config::ProviderMode::Sandbox => Err(ProviderError::Unavailable(
+                "DT One sandbox bill payment execution is not live in this milestone".to_string(),
+            )),
+            crate::config::ProviderMode::Production => Err(ProviderError::Unavailable(
+                "DT One production bill payment is not configured".to_string(),
+            )),
         }
     }
 
     async fn get_bill_status(&self, tx_id: &str) -> ProviderResult<BillTransaction> {
-        Ok(BillTransaction {
-            id: tx_id.to_string(),
-            quote_id: "quote_ref".to_string(),
-            biller_id: "ke_safaricom".to_string(),
-            biller_name: "Safaricom Airtime".to_string(),
-            service_type: BillServiceType::Airtime,
-            customer_account: "0712345678".to_string(),
-            amount_sats: 500,
-            amount_fiat: 100.0,
-            fee_sats: 50,
-            status: "completed".to_string(),
-            receipt_number: Some("REC-98218731".to_string()),
-            token_code: None,
-            provider: "dtone".to_string(),
-            created_at: Utc::now(),
-        })
+        match self.mode {
+            crate::config::ProviderMode::Mock => Ok(BillTransaction {
+                id: tx_id.to_string(),
+                quote_id: "quote_ref".to_string(),
+                biller_id: "ke_safaricom".to_string(),
+                biller_name: "Safaricom Airtime".to_string(),
+                service_type: BillServiceType::Airtime,
+                customer_account: "0712345678".to_string(),
+                amount_sats: 500,
+                amount_fiat: 100.0,
+                fee_sats: 50,
+                status: "completed".to_string(),
+                receipt_number: Some("REC-98218731".to_string()),
+                token_code: None,
+                provider: "dtone_mock".to_string(),
+                created_at: Utc::now(),
+            }),
+            crate::config::ProviderMode::Sandbox => Err(ProviderError::Unavailable(
+                "DT One sandbox bill status lookup is not live in this milestone".to_string(),
+            )),
+            crate::config::ProviderMode::Production => Err(ProviderError::Unavailable(
+                "DT One production bill status lookup is not configured".to_string(),
+            )),
+        }
     }
 }
 
 #[async_trait]
 impl EsimProvider for DtOneAdapter {
     async fn get_supported_countries(&self) -> ProviderResult<Vec<String>> {
+        if self.mode != crate::config::ProviderMode::Mock {
+            return Err(ProviderError::Unavailable(
+                "DT One sandbox eSIM services are not live in this milestone".to_string(),
+            ));
+        }
+
         Ok(vec![
             "KE".to_string(),
             "NG".to_string(),
@@ -662,6 +686,12 @@ impl EsimProvider for DtOneAdapter {
     }
 
     async fn get_esim_packages(&self, country_or_region: &str) -> ProviderResult<Vec<EsimPackage>> {
+        if self.mode != crate::config::ProviderMode::Mock {
+            return Err(ProviderError::Unavailable(
+                "DT One sandbox eSIM services are not live in this milestone".to_string(),
+            ));
+        }
+
         let cr = country_or_region.trim().to_uppercase();
         let name_prefix = match cr.as_str() {
             "KE" => "Kenya Traveler",
@@ -770,66 +800,62 @@ impl EsimProvider for DtOneAdapter {
                     expires_at: now + Duration::days(15),
                 })
             }
-            crate::config::ProviderMode::Sandbox => {
-                if !self.is_configured() {
-                    return Err(ProviderError::NotConfigured(
-                        "DT One sandbox credentials missing for eSIM purchase".to_string(),
-                    ));
-                }
-                Err(ProviderError::Unavailable(
-                    "DT One sandbox eSIM purchase is not live in this milestone".to_string(),
-                ))
-            }
-            crate::config::ProviderMode::Production => {
-                if !self.is_configured() {
-                    return Err(ProviderError::NotConfigured(
-                        "DT One production credentials missing".to_string(),
-                    ));
-                }
-                Err(ProviderError::Unavailable(
-                    "DT One production eSIM purchase is not configured".to_string(),
-                ))
-            }
+            crate::config::ProviderMode::Sandbox => Err(ProviderError::Unavailable(
+                "DT One sandbox eSIM purchase is not live in this milestone".to_string(),
+            )),
+            crate::config::ProviderMode::Production => Err(ProviderError::Unavailable(
+                "DT One production eSIM purchase is not configured".to_string(),
+            )),
         }
     }
 
     async fn get_esim_status(&self, profile_id: &str) -> ProviderResult<EsimProfile> {
-        let now = Utc::now();
-        Ok(EsimProfile {
-            id: profile_id.to_string(),
-            package_id: "esim_ke_3gb_15d".to_string(),
-            package_name: "Kenya Traveler 3 GB".to_string(),
-            country: "KE".to_string(),
-            iccid: "89234021000012345678".to_string(),
-            matching_id: "MATCH-1234".to_string(),
-            smdp_address: "rsp.dtone.com".to_string(),
-            qr_code_data: "LPA:1$rsp.dtone.com$MATCH-1234".to_string(),
-            ios_installation_url: "https://esimsetup.apple.com/esim_qrcode_provisioning?carddata=LPA:1$rsp.dtone.com$MATCH-1234".to_string(),
-            android_installation_url: "intent:#Intent;action=android.telephony.euicc.action.DOWNLOAD_SUBSCRIPTION;S.activation_code=LPA:1$rsp.dtone.com$MATCH-1234;end".to_string(),
-            data_allowance_mb: 3072,
-            remaining_data_mb: 2450,
-            status: "active".to_string(),
-            top_up_supported: true,
-            created_at: now - Duration::days(2),
-            expires_at: now + Duration::days(13),
-        })
+        match self.mode {
+            crate::config::ProviderMode::Mock => {
+                let now = Utc::now();
+                Ok(EsimProfile {
+                    id: profile_id.to_string(),
+                    package_id: "esim_ke_3gb_15d".to_string(),
+                    package_name: "Kenya Traveler 3 GB".to_string(),
+                    country: "KE".to_string(),
+                    iccid: "89234021000012345678".to_string(),
+                    matching_id: "MATCH-1234".to_string(),
+                    smdp_address: "rsp.dtone.com".to_string(),
+                    qr_code_data: "LPA:1$rsp.dtone.com$MATCH-1234".to_string(),
+                    ios_installation_url: "https://esimsetup.apple.com/esim_qrcode_provisioning?carddata=LPA:1$rsp.dtone.com$MATCH-1234".to_string(),
+                    android_installation_url: "intent:#Intent;action=android.telephony.euicc.action.DOWNLOAD_SUBSCRIPTION;S.activation_code=LPA:1$rsp.dtone.com$MATCH-1234;end".to_string(),
+                    data_allowance_mb: 3072,
+                    remaining_data_mb: 2450,
+                    status: "active".to_string(),
+                    top_up_supported: true,
+                    created_at: now - Duration::days(2),
+                    expires_at: now + Duration::days(13),
+                })
+            }
+            crate::config::ProviderMode::Sandbox => Err(ProviderError::Unavailable(
+                "DT One sandbox eSIM status is not live in this milestone".to_string(),
+            )),
+            crate::config::ProviderMode::Production => Err(ProviderError::Unavailable(
+                "DT One production eSIM status is not configured".to_string(),
+            )),
+        }
     }
 
     async fn top_up_esim(&self, profile_id: &str, package_id: &str) -> ProviderResult<EsimProfile> {
-        if self.mode != crate::config::ProviderMode::Mock {
-            if !self.is_configured() {
-                return Err(ProviderError::NotConfigured(
-                    "DT One credentials missing for eSIM top-up".to_string(),
-                ));
+        match self.mode {
+            crate::config::ProviderMode::Mock => {
+                let mut prof = self.get_esim_status(profile_id).await?;
+                prof.package_id = package_id.to_string();
+                prof.remaining_data_mb += 1024;
+                prof.data_allowance_mb += 1024;
+                Ok(prof)
             }
-            return Err(ProviderError::Unavailable(
-                "DT One eSIM top-up is not live in this milestone".to_string(),
-            ));
+            crate::config::ProviderMode::Sandbox => Err(ProviderError::Unavailable(
+                "DT One sandbox eSIM top-up is not live in this milestone".to_string(),
+            )),
+            crate::config::ProviderMode::Production => Err(ProviderError::Unavailable(
+                "DT One production eSIM top-up is not configured".to_string(),
+            )),
         }
-        let mut prof = self.get_esim_status(profile_id).await?;
-        prof.package_id = package_id.to_string();
-        prof.remaining_data_mb += 1024;
-        prof.data_allowance_mb += 1024;
-        Ok(prof)
     }
 }
