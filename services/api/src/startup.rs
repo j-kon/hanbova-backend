@@ -113,7 +113,7 @@ mod tests {
         );
         assert_eq!(
             caps.dtone_bills,
-            crate::providers::CapabilityStatus::Sandbox
+            crate::providers::CapabilityStatus::Disabled
         );
         assert_eq!(caps.lightning, crate::providers::CapabilityStatus::Disabled);
         assert_eq!(

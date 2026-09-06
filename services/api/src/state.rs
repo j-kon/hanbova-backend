@@ -140,8 +140,7 @@ impl AppState {
 
         let dtone_bills_status = match self.config.provider_mode {
             ProviderMode::Mock => CapabilityStatus::Mock,
-            ProviderMode::Sandbox => CapabilityStatus::Sandbox,
-            ProviderMode::Production => CapabilityStatus::Disabled,
+            _ => CapabilityStatus::Disabled,
         };
 
         let lightning_status = if !self.config.lightning_enabled {
