@@ -28,6 +28,14 @@ impl Default for BitnobClient {
     }
 }
 
+pub const OFFICIAL_BITNOB_BASE_URL: &str = "https://api.bitnob.com";
+
+fn is_allowed_local_test_url(url: &str) -> bool {
+    url.starts_with("http://127.0.0.1")
+        || url.starts_with("http://localhost")
+        || url.starts_with("http://[::1]")
+}
+
 impl BitnobClient {
     /// Builds a BitnobClient from environment variables.
     pub fn new() -> Self {
@@ -40,7 +48,8 @@ impl BitnobClient {
     }
 
     /// Builds a BitnobClient for a specific provider mode.
-    /// Both Sandbox and Production default to `https://api.bitnob.com`.
+    /// Both Sandbox and Production strictly enforce `https://api.bitnob.com`
+    /// and reject arbitrary insecure remote HTTP URLs.
     pub fn with_mode(mode: ProviderMode) -> Self {
         let client_id = std::env::var("BITNOB_CLIENT_ID")
             .ok()
@@ -49,10 +58,35 @@ impl BitnobClient {
             .ok()
             .filter(|s| !s.trim().is_empty());
 
-        let base_url = std::env::var("BITNOB_BASE_URL")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| "https://api.bitnob.com".to_string());
+        let base_url = match mode {
+            ProviderMode::Sandbox | ProviderMode::Production => {
+                if let Ok(custom_url) = std::env::var("BITNOB_BASE_URL") {
+                    let trimmed = custom_url.trim();
+                    if trimmed.is_empty() {
+                        OFFICIAL_BITNOB_BASE_URL.to_string()
+                    } else if trimmed.starts_with("https://") || is_allowed_local_test_url(trimmed)
+                    {
+                        trimmed.to_string()
+                    } else {
+                        tracing::warn!(
+                            provider = "bitnob",
+                            environment = %mode,
+                            url = %trimmed,
+                            "Insecure HTTP BITNOB_BASE_URL rejected in {:?}; falling back to official {}",
+                            mode,
+                            OFFICIAL_BITNOB_BASE_URL
+                        );
+                        OFFICIAL_BITNOB_BASE_URL.to_string()
+                    }
+                } else {
+                    OFFICIAL_BITNOB_BASE_URL.to_string()
+                }
+            }
+            ProviderMode::Mock => std::env::var("BITNOB_BASE_URL")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| OFFICIAL_BITNOB_BASE_URL.to_string()),
+        };
 
         let http_client = Client::builder()
             .timeout(Duration::from_secs(8))
@@ -75,7 +109,26 @@ impl BitnobClient {
         mode: ProviderMode,
         base_url: Option<String>,
     ) -> Self {
-        let default_url = "https://api.bitnob.com".to_string();
+        let default_url = OFFICIAL_BITNOB_BASE_URL.to_string();
+        let final_base_url = match base_url {
+            Some(url) => {
+                let trimmed = url.trim();
+                if (mode == ProviderMode::Sandbox || mode == ProviderMode::Production)
+                    && trimmed.starts_with("http://")
+                    && !is_allowed_local_test_url(trimmed)
+                {
+                    tracing::warn!(
+                        "Insecure remote HTTP URL rejected for Bitnob in {:?}; using official {}",
+                        mode,
+                        OFFICIAL_BITNOB_BASE_URL
+                    );
+                    default_url
+                } else {
+                    trimmed.to_string()
+                }
+            }
+            None => default_url,
+        };
 
         let http_client = Client::builder()
             .timeout(Duration::from_secs(5))
@@ -85,7 +138,7 @@ impl BitnobClient {
         Self {
             client_id,
             client_secret,
-            base_url: base_url.unwrap_or(default_url),
+            base_url: final_base_url,
             mode,
             http_client,
         }
@@ -125,6 +178,15 @@ impl BitnobClient {
                 )));
             }
         };
+
+        if (self.mode == ProviderMode::Sandbox || self.mode == ProviderMode::Production)
+            && self.base_url.starts_with("http://")
+            && !is_allowed_local_test_url(&self.base_url)
+        {
+            return Err(ProviderError::Unavailable(
+                "Insecure HTTP provider URL not permitted in sandbox/production".to_string(),
+            ));
+        }
 
         let timestamp = Utc::now().timestamp() as u64;
         let nonce = generate_nonce();

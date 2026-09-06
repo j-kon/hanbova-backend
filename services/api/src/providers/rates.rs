@@ -167,6 +167,15 @@ impl PlatformRateProvider for BitnobRateProvider {
                 )));
             }
         }
+        if let Some(ref er) = payout.exchange_rate {
+            if let Some(ref cur) = er.currency {
+                if cur.trim().to_uppercase() != currency_upper {
+                    return Err(ProviderError::Unavailable(format!(
+                        "Bitnob quote returned unexpected exchange_rate currency: {cur}"
+                    )));
+                }
+            }
+        }
 
         // Strict rate extraction from payout.exchange_rate.rate
         let rate = payout

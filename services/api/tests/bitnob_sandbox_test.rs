@@ -39,6 +39,7 @@ const MODE_NEGATIVE_RATE: usize = 7;
 const MODE_MISSING_RATE: usize = 8;
 const MODE_STATUS_FALSE: usize = 9;
 const MODE_WRONG_CORRIDOR: usize = 10;
+const MODE_WRONG_CURRENCY: usize = 11;
 
 fn verify_auth_headers(headers: &HeaderMap) {
     assert!(
@@ -296,6 +297,24 @@ async fn mock_payout_quotes_handler(
                         "to_currency": "NGN",
                         "exchange_rate": {
                             "rate": 95_000_000.0
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        ),
+        MODE_WRONG_CURRENCY => (
+            StatusCode::OK,
+            [("content-type", "application/json")],
+            json!({
+                "status": true,
+                "data": {
+                    "payout": {
+                        "from_asset": "USDT",
+                        "to_currency": "NGN",
+                        "exchange_rate": {
+                            "rate": 1620.50,
+                            "currency": "USD"
                         }
                     }
                 }
@@ -734,6 +753,40 @@ async fn test_13_client_whoami_verifies_authentication() {
     assert!(err.to_string().contains("authentication failed"));
 }
 
+// 14. Insecure remote HTTP base URL is blocked in sandbox and falls back to official URL
+#[tokio::test]
+async fn test_14_insecure_remote_http_base_url_is_blocked_in_sandbox() {
+    let client = BitnobClient::with_config(
+        Some("client-id-123".to_string()),
+        Some("client-secret-abc".to_string()),
+        ProviderMode::Sandbox,
+        Some("http://insecure-bitnob-remote.com".to_string()),
+    );
+    // Insecure remote HTTP URL must be rejected and replaced by official HTTPS URL
+    assert_eq!(client.base_url(), "https://api.bitnob.com");
+}
+
+// 15. Quote with mismatched exchange_rate currency is rejected
+#[tokio::test]
+async fn test_15_quote_with_mismatched_exchange_rate_currency_is_rejected() {
+    let (base_url, mode) = start_mock_server().await;
+    mode.store(MODE_WRONG_CURRENCY, Ordering::SeqCst);
+
+    let provider = BitnobRateProvider::with_config(
+        Some("client-id-123".to_string()),
+        Some("client-secret-abc".to_string()),
+        ProviderMode::Sandbox,
+        Some(base_url),
+    );
+
+    let result = provider.get_rate("NG", "USDT", "NGN").await;
+    assert!(result.is_err());
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("unexpected exchange_rate currency"));
+}
+
 // Opt-in real Bitnob sandbox test: only executed when explicitly triggered and credentials exist
 #[tokio::test]
 #[ignore]
@@ -755,33 +808,47 @@ async fn test_real_bitnob_sandbox_connectivity() {
         None, // Uses official URL: https://api.bitnob.com
     );
 
-    println!("[STEP A] Verifying credentials via GET /api/whoami...");
+    // STEP 1: Verify /api/whoami first
     match client.whoami().await {
-        Ok(whoami) => {
-            println!("[STEP A: PASS] Authenticated: status={:?}", whoami.status);
+        Ok(_whoami) => {
+            println!("Authentication: PASS");
         }
         Err(err) => {
-            eprintln!("[STEP A: FAIL] Authentication failed: {err}");
-            panic!("Live Bitnob whoami failed: {err}");
+            let err_str = err.to_string();
+            let classification = if err_str.contains("IP address not whitelisted") {
+                "IP_NOT_WHITELISTED"
+            } else if err_str.contains("authentication failed") || err_str.contains("401") {
+                "AUTHENTICATION_FAILED"
+            } else if err_str.contains("rate limit") || err_str.contains("429") {
+                "RATE_LIMITED"
+            } else if err_str.contains("access forbidden") || err_str.contains("403") {
+                "PROVIDER_FORBIDDEN"
+            } else if err_str.contains("network") {
+                "NETWORK_ERROR"
+            } else {
+                "PROVIDER_UNAVAILABLE"
+            };
+            eprintln!("Authentication: FAIL");
+            eprintln!("FAILURE CLASSIFICATION: {classification}");
+            eprintln!("Error: {err}");
+            panic!("FAIL_{classification}: {err}");
         }
     }
 
-    println!("[STEP B] Requesting quote via POST /api/payouts/quotes (USDT -> NGN)...");
+    // STEP 2: Verify POST /api/payouts/quotes (USDT -> NGN)
     let provider =
         BitnobRateProvider::with_config(client_id, client_secret, ProviderMode::Sandbox, None);
     match provider.get_rate("NG", "USDT", "NGN").await {
         Ok(rate) => {
-            println!("\n====================================================");
-            println!("REAL BITNOB PROVIDER RESPONSE RECEIVED");
+            println!("Quote request: PASS");
             println!("Provider: {}", rate.provider);
             println!("Environment: {}", rate.environment);
             println!("Market: {}", rate.market);
             println!("Pair: {} -> {}", rate.settlement_asset, rate.quote);
             println!("Rate: {}", rate.rate);
-            println!("Display: {}", rate.display);
             println!("is_live: {}", rate.is_live);
             println!("is_stale: {}", rate.is_stale);
-            println!("====================================================\n");
+            println!("\nRESULT: REAL BITNOB SANDBOX RESPONSE");
             assert_eq!(rate.provider, "bitnob");
             assert_eq!(rate.environment, "sandbox");
             assert!(!rate.is_live, "Sandbox rate must NEVER be live");
@@ -789,11 +856,35 @@ async fn test_real_bitnob_sandbox_connectivity() {
             assert!(rate.rate > 0.0);
         }
         Err(err) => {
-            println!("\n====================================================");
-            println!("FAILED TO CONNECT");
-            println!("Error: {err}");
-            println!("====================================================\n");
-            panic!("Live Bitnob payout quote request failed: {err}");
+            let err_str = err.to_string();
+            let classification = if err_str.contains("IP address not whitelisted") {
+                "IP_NOT_WHITELISTED"
+            } else if err_str.contains("unexpected from_asset")
+                || err_str.contains("unexpected to_currency")
+                || err_str.contains("unexpected exchange_rate currency")
+            {
+                "UNSUPPORTED_CORRIDOR"
+            } else if err_str.contains("Missing or invalid exchange rate")
+                || err_str.contains("rate must be greater than zero")
+            {
+                "QUOTE_VALIDATION_FAILED"
+            } else if err_str.contains("Failed to parse") {
+                "MALFORMED_RESPONSE"
+            } else if err_str.contains("authentication failed") {
+                "AUTHENTICATION_FAILED"
+            } else if err_str.contains("rate limit") {
+                "RATE_LIMITED"
+            } else if err_str.contains("access forbidden") {
+                "PROVIDER_FORBIDDEN"
+            } else if err_str.contains("network") {
+                "NETWORK_ERROR"
+            } else {
+                "PROVIDER_UNAVAILABLE"
+            };
+            eprintln!("Quote request: FAIL");
+            eprintln!("FAILURE CLASSIFICATION: {classification}");
+            eprintln!("Error: {err}");
+            panic!("FAIL_{classification}: {err}");
         }
     }
 }
