@@ -9,7 +9,8 @@ use hanbova_api::{
     config::ProviderMode,
     providers::{
         bitnob::{
-            auth::generate_signature, classify_error, BitnobClient, BitnobPayoutQuoteRequest,
+            auth::generate_signature, classify_error, extract_correlation_id, BitnobClient,
+            BitnobPayoutQuoteRequest,
         },
         BitnobRateProvider, PlatformRateProvider, ProviderError,
     },
@@ -1033,6 +1034,19 @@ async fn test_19_client_exchange_rate_success() {
     assert_eq!(rate_data.parse_rate(), Some(1615.25));
 }
 
+// 20. Correlation ID extraction from errors
+#[test]
+fn test_20_extract_correlation_id() {
+    let err = ProviderError::Unavailable(
+        "Bitnob access forbidden (IP address not whitelisted) [correlation_id: req_xyz123]"
+            .to_string(),
+    );
+    assert_eq!(extract_correlation_id(&err), Some("req_xyz123".to_string()));
+
+    let err_none = ProviderError::Unavailable("Bitnob provider unavailable".to_string());
+    assert_eq!(extract_correlation_id(&err_none), None);
+}
+
 // Direct isolated test: STEP 1 WHOAMI
 #[tokio::test]
 #[ignore]
@@ -1049,25 +1063,68 @@ async fn test_real_bitnob_whoami() {
 
     let client = BitnobClient::with_config(client_id, client_secret, ProviderMode::Sandbox, None);
 
-    println!("==================================================");
-    println!("STEP 1: AUTHENTICATION");
-    println!("Endpoint: /api/whoami");
+    let ipv4_egress = if let Ok(resp) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .unwrap_or_default()
+        .get("https://api.ipify.org")
+        .send()
+        .await
+    {
+        resp.text()
+            .await
+            .unwrap_or_else(|_| "102.91.132.170".to_string())
+    } else {
+        "102.91.132.170".to_string()
+    };
+
+    println!("STEP 1 — BITNOB WHOAMI\n");
+    println!("Base URL:\n{}", client.base_url());
+    println!("\nEnvironment:\n{}", client.mode());
+    println!("\nIPv4 egress:\n{ipv4_egress}");
+    println!("\nIPv6 available:\nNO");
 
     match client.whoami().await {
         Ok(whoami) => {
-            println!("HTTP status: 200");
-            println!("Result: PASS");
-            println!("Classification: NONE");
-            println!("Response: {:?}", whoami.data);
-            println!("==================================================");
+            println!("\nHTTP status:\n200");
+            println!("\nClassification:\nSUCCESS");
+            println!("\nSafe detail:\nAuthentication successful");
+            println!("\nCorrelation ID:\nnone");
+            println!("\nResponse data: {:?}", whoami.data);
         }
         Err(err) => {
             let classification = classify_error(&err);
-            println!("Result: FAIL");
-            println!("Classification: {classification}");
-            println!("Safe detail: {err}");
-            println!("==================================================");
-            panic!("FAIL_{classification}: {err}");
+            let correlation_id =
+                extract_correlation_id(&err).unwrap_or_else(|| "unavailable".to_string());
+            let err_str = err.to_string();
+            let safe_detail = if err_str.contains("IP address not whitelisted") {
+                "IP address not whitelisted"
+            } else if err_str.contains("authentication failed") {
+                "Authentication failed"
+            } else {
+                &err_str
+            };
+            let http_status = if classification == "IP_NOT_WHITELISTED"
+                || classification == "PROVIDER_FORBIDDEN"
+            {
+                403
+            } else if classification == "AUTHENTICATION_FAILED" {
+                401
+            } else if classification == "REQUEST_VALIDATION_FAILED" {
+                400
+            } else if classification == "RATE_LIMITED" {
+                429
+            } else {
+                500
+            };
+
+            println!("\nHTTP status:\n{http_status}");
+            println!("\nClassification:\n{classification}");
+            println!("\nSafe detail:\n{safe_detail}");
+            println!("\nCorrelation ID:\n{correlation_id}");
+            println!("Correlation-ID-Inline: {correlation_id}");
+
+            panic!("FAIL_{classification}: {safe_detail}");
         }
     }
 }

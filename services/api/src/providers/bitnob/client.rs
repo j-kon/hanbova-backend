@@ -90,10 +90,11 @@ impl BitnobClient {
                 .unwrap_or_else(|| OFFICIAL_BITNOB_BASE_URL.to_string()),
         };
 
-        let http_client = Client::builder()
-            .timeout(Duration::from_secs(8))
-            .build()
-            .unwrap_or_default();
+        let mut builder = Client::builder().timeout(Duration::from_secs(8));
+        if std::env::var("BITNOB_DIAGNOSTIC_FORCE_IPV4").as_deref() == Ok("true") {
+            builder = builder.local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        }
+        let http_client = builder.build().unwrap_or_default();
 
         Self {
             client_id,
@@ -139,10 +140,11 @@ impl BitnobClient {
             None => default_url,
         };
 
-        let http_client = Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap_or_default();
+        let mut builder = Client::builder().timeout(Duration::from_secs(5));
+        if std::env::var("BITNOB_DIAGNOSTIC_FORCE_IPV4").as_deref() == Ok("true") {
+            builder = builder.local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        }
+        let http_client = builder.build().unwrap_or_default();
 
         Self {
             client_id: normalized_id,
@@ -240,13 +242,25 @@ impl BitnobClient {
         let latency_ms = start_time.elapsed().as_millis() as u64;
 
         if !status.is_success() {
+            // Extract potential correlation/request IDs from headers first
+            let header_corr_id = response
+                .headers()
+                .get("x-correlation-id")
+                .or_else(|| response.headers().get("x-request-id"))
+                .or_else(|| response.headers().get("x-amzn-requestid"))
+                .or_else(|| response.headers().get("cf-ray"))
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+
             // Read response safely to extract error code and correlation_id without leaking payload
             let err_text = response.text().await.unwrap_or_default();
             let parsed_err: Option<BitnobErrorDetail> = serde_json::from_str(&err_text).ok();
             let correlation_id = parsed_err
                 .as_ref()
                 .and_then(|e| e.correlation_id.clone().or_else(|| e.request_id.clone()))
-                .unwrap_or_else(|| "none".to_string());
+                .or(header_corr_id)
+                .unwrap_or_else(|| "unavailable".to_string());
 
             let error_detail = parsed_err
                 .as_ref()
@@ -265,6 +279,12 @@ impl BitnobClient {
                 "Bitnob upstream returned error status"
             );
 
+            let corr_suffix = if correlation_id != "unavailable" && correlation_id != "none" {
+                format!(" [correlation_id: {correlation_id}]")
+            } else {
+                String::new()
+            };
+
             // Map HTTP status codes to differentiated ProviderError types without leaking auth material
             match status {
                 StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
@@ -273,7 +293,9 @@ impl BitnobClient {
                     } else {
                         error_detail
                     };
-                    return Err(ProviderError::ValidationFailed(safe_detail));
+                    return Err(ProviderError::ValidationFailed(format!(
+                        "{safe_detail}{corr_suffix}"
+                    )));
                 }
                 StatusCode::CONFLICT => {
                     let safe_detail = if error_detail.trim().is_empty() {
@@ -281,42 +303,44 @@ impl BitnobClient {
                     } else {
                         format!("Bitnob conflict: {error_detail}")
                     };
-                    return Err(ProviderError::ValidationFailed(safe_detail));
+                    return Err(ProviderError::ValidationFailed(format!(
+                        "{safe_detail}{corr_suffix}"
+                    )));
                 }
                 StatusCode::UNAUTHORIZED => {
-                    return Err(ProviderError::Unavailable(
-                        "Bitnob authentication failed".to_string(),
-                    ));
+                    return Err(ProviderError::Unavailable(format!(
+                        "Bitnob authentication failed{corr_suffix}"
+                    )));
                 }
                 StatusCode::FORBIDDEN => {
                     if error_detail.contains("IP address not whitelisted") {
-                        return Err(ProviderError::Unavailable(
-                            "Bitnob access forbidden (IP address not whitelisted)".to_string(),
-                        ));
+                        return Err(ProviderError::Unavailable(format!(
+                            "Bitnob access forbidden (IP address not whitelisted){corr_suffix}"
+                        )));
                     } else {
-                        return Err(ProviderError::Unavailable(
-                            "Bitnob access forbidden".to_string(),
-                        ));
+                        return Err(ProviderError::Unavailable(format!(
+                            "Bitnob access forbidden{corr_suffix}"
+                        )));
                     }
                 }
                 StatusCode::NOT_FOUND => {
-                    return Err(ProviderError::Unavailable(
-                        "Bitnob endpoint not found".to_string(),
-                    ));
+                    return Err(ProviderError::Unavailable(format!(
+                        "Bitnob endpoint not found{corr_suffix}"
+                    )));
                 }
                 StatusCode::TOO_MANY_REQUESTS => {
-                    return Err(ProviderError::RateLimit(
-                        "Bitnob rate limit exceeded".to_string(),
-                    ));
+                    return Err(ProviderError::RateLimit(format!(
+                        "Bitnob rate limit exceeded{corr_suffix}"
+                    )));
                 }
                 s if s.is_server_error() => {
-                    return Err(ProviderError::Unavailable(
-                        "Bitnob provider unavailable".to_string(),
-                    ));
+                    return Err(ProviderError::Unavailable(format!(
+                        "Bitnob provider unavailable{corr_suffix}"
+                    )));
                 }
                 _ => {
                     return Err(ProviderError::Unavailable(format!(
-                        "Bitnob HTTP error {status}"
+                        "Bitnob HTTP error {status}{corr_suffix}"
                     )));
                 }
             }
@@ -454,4 +478,22 @@ pub fn classify_error(err: &ProviderError) -> &'static str {
         }
         _ => "PROVIDER_UNAVAILABLE",
     }
+}
+
+/// Safely extracts the correlation ID from a ProviderError if present.
+pub fn extract_correlation_id(err: &ProviderError) -> Option<String> {
+    let msg = match err {
+        ProviderError::Unavailable(m)
+        | ProviderError::ValidationFailed(m)
+        | ProviderError::RateLimit(m)
+        | ProviderError::Internal(m) => m,
+        _ => return None,
+    };
+    if let Some(start) = msg.find("[correlation_id: ") {
+        let rest = &msg[start + "[correlation_id: ".len()..];
+        if let Some(end) = rest.find(']') {
+            return Some(rest[..end].trim().to_string());
+        }
+    }
+    None
 }
