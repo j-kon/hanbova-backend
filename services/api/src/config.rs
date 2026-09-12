@@ -1,5 +1,8 @@
 use std::{collections::HashMap, fmt};
 
+mod hosted_url;
+use hosted_url::is_hosted_https_url;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Environment {
     Development,
@@ -198,29 +201,20 @@ impl AppConfig {
             },
             &mut problems,
         );
-        if pilot_or_prod && !mint_url.starts_with("https://") {
-            problems.push(format!("MINT_URL must use HTTPS in {env_label}"));
-        }
-        if pilot_or_prod
-            && (mint_url.contains("127.0.0.1")
-                || mint_url.contains("localhost")
-                || mint_url.contains("10.0.2.2"))
-        {
-            problems.push(format!(
-                "MINT_URL must not point to localhost in {env_label}"
-            ));
+        if pilot_or_prod && !is_hosted_https_url(&mint_url) {
+            problems.push(hosted_url_error("MINT_URL", &env_label));
         }
 
-        // Check external URL variables for forbidden localhost targets in pilot/production
+        // Validate external endpoint hosts, never substrings of URL paths.
+        // Database addresses may remain on a private deployment network.
         if pilot_or_prod {
             for (key, val) in &vars {
                 if (key.ends_with("_BASE_URL") || key.ends_with("_URL"))
                     && key != "DATABASE_URL"
-                    && (val.contains("127.0.0.1")
-                        || val.contains("localhost")
-                        || val.contains("10.0.2.2"))
+                    && key != "MINT_URL"
+                    && !is_hosted_https_url(val)
                 {
-                    problems.push(format!("{key} must not point to localhost in {env_label}"));
+                    problems.push(hosted_url_error(key, &env_label));
                 }
             }
         }
@@ -290,6 +284,9 @@ impl AppConfig {
             });
             if !valid {
                 problems.push("CORS_ALLOWED_ORIGINS must contain valid HTTP origins without paths, credentials or queries".to_string());
+            }
+            if pilot_or_prod && !is_hosted_https_url(origin) {
+                problems.push(hosted_url_error("CORS_ALLOWED_ORIGINS", &env_label));
             }
         }
         if pilot_or_prod && cors_allowed_origins.iter().any(|origin| origin == "*") {
@@ -384,6 +381,10 @@ impl AppConfig {
     }
 }
 
+fn hosted_url_error(key: &str, environment: &str) -> String {
+    format!("{key} must use HTTPS and must not point to localhost in {environment}; private addresses, credentials, queries and fragments are forbidden")
+}
+
 fn required_or_default(
     vars: &HashMap<String, String>,
     name: &str,
@@ -436,6 +437,49 @@ mod tests {
             ("PROVIDER_MODE", "sandbox"),
             ("CORS_ALLOWED_ORIGINS", "https://pilot.example.com"),
         ]
+    }
+
+    #[test]
+    fn hosted_endpoints_reject_private_and_malformed_urls() {
+        for base in [valid_pilot_vars(), valid_production_vars()] {
+            for key in ["MINT_URL", "DTONE_BASE_URL", "CORS_ALLOWED_ORIGINS"] {
+                for value in [
+                    "https://",
+                    "https://192.168.1.5",
+                    "https://10.1.2.3",
+                    "https://172.20.0.1",
+                    "https://127.1.2.3",
+                    "https://169.254.169.254",
+                    "https://0.0.0.0",
+                    "https://[::1]",
+                    "https://[fc00::1]",
+                    "https://[fe80::1]",
+                    "https://[::ffff:192.168.1.5]",
+                    "https://LOCALHOST.",
+                    "https://mint.local",
+                    "https://mint.example.com..",
+                    "https://user:secret@api.example.com",
+                    "https://api.example.com?token=secret",
+                    "https://api.example.com#fragment",
+                ] {
+                    let mut vars = base.clone();
+                    vars.retain(|(name, _)| *name != key);
+                    vars.push((key, value));
+                    assert!(
+                        AppConfig::from_iter(vars).is_err(),
+                        "accepted {key}={value}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hosted_endpoint_validation_does_not_reject_public_url_path_substrings() {
+        let mut vars = valid_pilot_vars();
+        vars.retain(|(key, _)| *key != "MINT_URL");
+        vars.push(("MINT_URL", "https://mint.example.com/localhost/127.0.0.1"));
+        assert!(AppConfig::from_iter(vars).is_ok());
     }
 
     #[test]

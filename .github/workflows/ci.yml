@@ -2,7 +2,7 @@ name: Hanbova Backend CI
 
 on:
   push:
-    branches: [ main, 'milestone/**' ]
+    branches: [ main, 'milestone/**', 'feat/**' ]
   pull_request:
     branches: [ main ]
 
