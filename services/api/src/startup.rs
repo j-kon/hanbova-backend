@@ -3,10 +3,15 @@ use sqlx::{postgres::PgPoolOptions, PgPool};
 use crate::config::AppConfig;
 
 /// Connects PostgreSQL and applies migrations before the application accepts
-/// traffic. Errors are deliberately returned to the caller so production can
-/// fail closed instead of constructing an in-memory state.
+/// traffic. Errors are deliberately returned to the caller so pilot and
+/// production can fail closed instead of constructing an in-memory state.
 pub async fn connect_database(config: &AppConfig) -> Result<Option<PgPool>, sqlx::Error> {
     let Some(database_url) = &config.database_url else {
+        if config.is_pilot() || config.is_production() {
+            return Err(sqlx::Error::Configuration(
+                format!("DATABASE_URL is required in {}", config.environment).into(),
+            ));
+        }
         tracing::info!("No DATABASE_URL configured. Running with in-memory persistence.");
         return Ok(None);
     };
@@ -43,10 +48,33 @@ mod tests {
         .unwrap()
     }
 
+    fn pilot_config() -> AppConfig {
+        AppConfig::from_iter([
+            ("HANBOVA_ENV", "pilot"),
+            ("HANBOVA_API_HOST", "0.0.0.0"),
+            ("HANBOVA_API_PORT", "8080"),
+            ("DATABASE_URL", "postgres://hanbova:secret@db/hanbova"),
+            ("JWT_SECRET", "pilot-secret-that-is-at-least-32-bytes-long"),
+            ("MINT_URL", "https://test-mint.example.com"),
+            ("PROVIDER_MODE", "sandbox"),
+            ("CORS_ALLOWED_ORIGINS", "https://pilot.example.com"),
+        ])
+        .unwrap()
+    }
+
     #[test]
     fn production_refuses_missing_pool() {
         let error = match AppState::try_new(production_config(), None) {
             Ok(_) => panic!("production must not start without PostgreSQL"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("PostgreSQL"));
+    }
+
+    #[test]
+    fn pilot_refuses_missing_pool() {
+        let error = match AppState::try_new(pilot_config(), None) {
+            Ok(_) => panic!("pilot must not start without PostgreSQL"),
             Err(error) => error,
         };
         assert!(error.to_string().contains("PostgreSQL"));
@@ -65,10 +93,33 @@ mod tests {
             .connect_lazy("postgres://hanbova:secret@db/hanbova")
             .unwrap();
         let error = match AppState::try_new(production_config(), Some(pool)) {
-            Ok(_) => panic!("production must not start with mock providers"),
+            Ok(_) => panic!("production must not start with unconfigured providers"),
             Err(error) => error,
         };
         assert!(error.to_string().contains("providers"));
+    }
+
+    #[tokio::test]
+    async fn pilot_allows_sandbox_providers_with_db() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://hanbova:secret@db/hanbova")
+            .unwrap();
+        let state = AppState::try_new(pilot_config(), Some(pool)).unwrap();
+        assert!(state.db_pool.is_some());
+        let caps = state.capabilities();
+        assert_eq!(
+            caps.bitnob_rates,
+            crate::providers::CapabilityStatus::Disabled
+        );
+        assert_eq!(
+            caps.dtone_bills,
+            crate::providers::CapabilityStatus::Disabled
+        );
+        assert_eq!(caps.lightning, crate::providers::CapabilityStatus::Disabled);
+        assert_eq!(
+            caps.protected_send,
+            crate::providers::CapabilityStatus::Test
+        );
     }
 
     #[tokio::test]
@@ -82,6 +133,24 @@ mod tests {
             ("MINT_URL", "https://mint.example.com"),
             ("PROVIDER_MODE", "production"),
             ("CORS_ALLOWED_ORIGINS", "https://app.example.com"),
+        ])
+        .unwrap();
+
+        let error = super::connect_database(&config).await.unwrap_err();
+        assert!(!error.to_string().is_empty());
+    }
+
+    #[tokio::test]
+    async fn database_connection_errors_are_returned_in_pilot() {
+        let config = AppConfig::from_iter([
+            ("HANBOVA_ENV", "pilot"),
+            ("HANBOVA_API_HOST", "0.0.0.0"),
+            ("HANBOVA_API_PORT", "8080"),
+            ("DATABASE_URL", "not-a-postgres-url"),
+            ("JWT_SECRET", "pilot-secret-that-is-at-least-32-bytes-long"),
+            ("MINT_URL", "https://test-mint.example.com"),
+            ("PROVIDER_MODE", "sandbox"),
+            ("CORS_ALLOWED_ORIGINS", "https://pilot.example.com"),
         ])
         .unwrap();
 

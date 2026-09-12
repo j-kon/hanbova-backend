@@ -58,11 +58,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pool = match startup::connect_database(&config).await {
         Ok(pool) => pool,
-        Err(error) if config.is_production() => return Err(error.into()),
+        Err(error) if config.is_pilot() || config.is_production() => return Err(error.into()),
         Err(error) => {
             tracing::warn!(
                 error = %error,
-                "PostgreSQL is unavailable in a non-production environment; using in-memory persistence"
+                "PostgreSQL is unavailable in a non-production/non-pilot environment; using in-memory persistence"
             );
             None
         }

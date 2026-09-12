@@ -34,6 +34,8 @@ EXPOSE 8080
 
 # Set environment defaults
 ENV RUST_LOG=info \
+    HANBOVA_API_HOST=0.0.0.0 \
+    HANBOVA_API_PORT=8080 \
     PORT=8080 \
     HOST=0.0.0.0
 
